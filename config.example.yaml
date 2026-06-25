@@ -1,0 +1,87 @@
+# Morality Happiness project configuration template.
+# Copy to config.yaml and replace the placeholder API values with your real keys.
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+simulation:
+  population_size: 120
+  ticks: 200
+  seed: 42
+  need_base: 1.5
+  food_scale: 1.6
+  alpha: 1.15
+  alpha_individual: 1.35
+  lambda_c: 0.2
+  lambda_g: 0.25
+  org_cost_per_team: 0.75
+  group_cost_per_team: 0.45
+  base_combat_power: 10.0
+  prey_meat_scale: 0.18
+  environment_volatility: 0.1
+  organized_equal_weight: 0.8
+  share_norm_alt_weight: 0.4
+  share_norm_restraint_weight: 0.2
+  restraint_need_discount: 0.12
+  reserve_cap_days: 7.0
+  typical_team_size: 10
+  target_group_size: 8
+  min_group_size: 3
+  max_group_size: 12
+  regroup_interval: 20
+  individual_transfer_strength: 0.18
+  group_need_memory_weight: 0.3
+  moral_consistency_weight: 0.2
+  autonomy_weight: 0.1
+
+llm:
+  default_provider: "rule"
+  sample_rate: 0.0
+  temperature: 0.2
+  timeout_seconds: 60
+  max_tokens: 256
+  providers:
+    rule:
+      label: "规则默认"
+      model: "deterministic-wellbeing-engine"
+      api_key: ""
+      base_url: ""
+      description: "不调用外部 API，使用本地可复现实验规则。"
+    openai:
+      label: "OpenAI"
+      model: "gpt-4o-mini"
+      api_key: "这里是API"
+      base_url: "https://api.openai.com/v1"
+      description: "Camel-AI + OpenAI 官方接口。"
+    deepseek:
+      label: "DeepSeek-V4-flash"
+      model: "deepseek-v4-flash"
+      api_key: "这里是API"
+      base_url: "https://api.deepseek.com/v1"
+      description: "Camel-AI + DeepSeek-V4-flash 行为决策接口。"
+    local-deepseek:
+      label: "本地DeepSeek"
+      model: "deepseek-v4-flash"
+      api_key: "这里是API"
+      base_url: "https://uni-api.cstcloud.cn/v1"
+      response_mode: "instruct"
+      max_tokens: 256
+      thinking: false
+      chat_template_kwargs:
+        thinking: false
+      description: "中国科技云 Uni-API OpenAI-Compatible 接口，调用 deepseek-v4-flash；默认关闭 thinking，按 instruct/直接回答模式输出。"
+    qwen3:
+      label: "Qwen3 (Ollama)"
+      model: "qwen3:2b"
+      api_key: "EMPTY"
+      base_url: "http://localhost:11434"
+      description: "Ollama 原生 /api/chat 接口；可改为远程服务器地址，例如 http://your-server:11434。"
+    qwen-bailian:
+      label: "阿里云Qwen"
+      model: "qwen-plus"
+      api_key: "这里是API"
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      response_mode: "instruct"
+      max_tokens: 256
+      description: "阿里云百炼 OpenAI-Compatible Chat Completions 接口；可将 model 改为百炼控制台中的 Qwen 模型 ID。"
