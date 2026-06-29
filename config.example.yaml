@@ -6,8 +6,8 @@ server:
   port: 8000
 
 simulation:
-  population_size: 120
-  ticks: 200
+  population_size: 24
+  ticks: 10
   seed: 42
   need_base: 1.5
   food_scale: 1.6
@@ -41,6 +41,7 @@ llm:
   temperature: 0.2
   timeout_seconds: 60
   max_tokens: 256
+  decision_retries: 2
   providers:
     rule:
       label: "规则默认"
@@ -59,18 +60,21 @@ llm:
       model: "deepseek-v4-flash"
       api_key: "这里是API"
       base_url: "https://api.deepseek.com/v1"
-      description: "Camel-AI + DeepSeek-V4-flash 行为决策接口。"
+      description: "OpenAI-Compatible direct-json + DeepSeek-V4-flash 行为决策接口，不经过 Camel-AI。"
     local-deepseek:
       label: "本地DeepSeek"
       model: "deepseek-v4-flash"
       api_key: "这里是API"
-      base_url: "https://uni-api.cstcloud.cn/v1"
+      base_url: "https://uni-api-global.cstcloud.cn/v1"
       response_mode: "instruct"
-      max_tokens: 256
+      timeout_seconds: 12
+      max_retries: 0
+      decision_retries: 1
+      max_tokens: 160
       thinking: false
       chat_template_kwargs:
         thinking: false
-      description: "中国科技云 Uni-API OpenAI-Compatible 接口，调用 deepseek-v4-flash；默认关闭 thinking，按 instruct/直接回答模式输出。"
+      description: "中国科技云 Uni-API Global OpenAI-Compatible direct-json 接口，调用 deepseek-v4-flash；默认关闭 thinking，按 instruct/直接回答模式输出。"
     qwen3:
       label: "Qwen3 (Ollama)"
       model: "qwen3:2b"

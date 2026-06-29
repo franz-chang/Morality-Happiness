@@ -114,8 +114,8 @@ SCENARIOS: dict[str, Scenario] = {
 
 @dataclass
 class SimulationParameters:
-    population_size: int = 120
-    ticks: int = 200
+    population_size: int = 24
+    ticks: int = 10
     seed: int = 42
     need_base: float = 1.5
     food_scale: float = 1.6

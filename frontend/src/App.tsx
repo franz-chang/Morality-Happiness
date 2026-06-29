@@ -124,8 +124,8 @@ type StreamEvent = {
 };
 
 const defaultParams: Parameters = {
-  population_size: 120,
-  ticks: 80,
+  population_size: 24,
+  ticks: 10,
   seed: 42,
   food_scale: 1.6,
   alpha: 1.15,
@@ -329,10 +329,8 @@ function App() {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([
     { id: "rule", label: "规则默认", model: "deterministic-wellbeing-engine", base_url: "", description: "本地规则评分" },
     { id: "openai", label: "OpenAI", model: "gpt-4o-mini", base_url: "", description: "Camel-AI + OpenAI" },
-    { id: "deepseek", label: "DeepSeek-V4-flash", model: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1", description: "Camel-AI + DeepSeek-V4-flash 行为驱动" },
-    { id: "local-deepseek", label: "本地DeepSeek", model: "deepseek-v4-flash", base_url: "https://uni-api.cstcloud.cn/v1", description: "中国科技云 Uni-API；默认关闭 thinking，按 instruct/直接回答模式输出" },
-    { id: "qwen3", label: "Qwen3 (Ollama)", model: "qwen3:8b", base_url: "http://localhost:11434", description: "Ollama 原生 /api/chat" },
-    { id: "qwen-bailian", label: "阿里云Qwen", model: "qwen-plus", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", description: "阿里云百炼 OpenAI-Compatible Chat Completions 接口" },
+    { id: "deepseek", label: "DeepSeek-V4-flash", model: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1", description: "OpenAI-Compatible direct-json 行为驱动" },
+    { id: "local-deepseek", label: "本地DeepSeek", model: "deepseek-v4-flash", base_url: "https://uni-api-global.cstcloud.cn/v1", description: "中国科技云 Uni-API Global direct-json；默认关闭 thinking，按 instruct/直接回答模式输出" },
   ]);
   const [scenarios, setScenarios] = useState<Scenario[]>(fallbackScenarios);
   const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>(fallbackScenarios.map((s) => s.id));
@@ -828,6 +826,15 @@ function App() {
               ? `${result.model_status.framework}/${result.model_status.provider}: ${result.model_status.reason}`
               : selectedModelDescription(modelOptions, String(params.llm_provider ?? "rule"))}
           </div>
+          <ParamControl label={t.ticks} value={numberValue(params.ticks)} min={10} max={300} step={10} onChange={(value) => updateParam("ticks", value)} />
+          <ParamControl label={t.population} value={numberValue(params.population_size)} min={24} max={240} step={12} onChange={(value) => updateParam("population_size", value)} />
+          <ParamControl label={t.foodScale} value={numberValue(params.food_scale)} min={0.8} max={3.2} step={0.05} onChange={(value) => updateParam("food_scale", value)} />
+          <ParamControl label={t.lambdaC} value={numberValue(params.lambda_c)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_c", value)} />
+          <ParamControl label={t.lambdaG} value={numberValue(params.lambda_g)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_g", value)} />
+          <ParamControl label={t.envVolatility} value={numberValue(params.environment_volatility)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("environment_volatility", value)} />
+          <ParamControl label={t.moralWeight} value={numberValue(params.moral_consistency_weight)} min={0.05} max={0.45} step={0.01} onChange={(value) => updateParam("moral_consistency_weight", value)} />
+          <ParamControl label={t.autonomyWeight} value={numberValue(params.autonomy_weight)} min={0.05} max={0.35} step={0.01} onChange={(value) => updateParam("autonomy_weight", value)} />
+          <div className="scenario-section-title">实验情景</div>
           <div className="scenario-grid">
             {scenarios.map((scenario) => (
               <button
@@ -840,14 +847,6 @@ function App() {
               </button>
             ))}
           </div>
-          <ParamControl label={t.ticks} value={numberValue(params.ticks)} min={10} max={300} step={10} onChange={(value) => updateParam("ticks", value)} />
-          <ParamControl label={t.population} value={numberValue(params.population_size)} min={24} max={240} step={12} onChange={(value) => updateParam("population_size", value)} />
-          <ParamControl label={t.foodScale} value={numberValue(params.food_scale)} min={0.8} max={3.2} step={0.05} onChange={(value) => updateParam("food_scale", value)} />
-          <ParamControl label={t.lambdaC} value={numberValue(params.lambda_c)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_c", value)} />
-          <ParamControl label={t.lambdaG} value={numberValue(params.lambda_g)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_g", value)} />
-          <ParamControl label={t.envVolatility} value={numberValue(params.environment_volatility)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("environment_volatility", value)} />
-          <ParamControl label={t.moralWeight} value={numberValue(params.moral_consistency_weight)} min={0.05} max={0.45} step={0.01} onChange={(value) => updateParam("moral_consistency_weight", value)} />
-          <ParamControl label={t.autonomyWeight} value={numberValue(params.autonomy_weight)} min={0.05} max={0.35} step={0.01} onChange={(value) => updateParam("autonomy_weight", value)} />
         </aside>
 
         <section className="dashboard" style={controlPanelHeight ? { height: controlPanelHeight } : undefined}>
@@ -1285,7 +1284,7 @@ function SystemLog({ result, language }: { result: ScenarioResult | null; langua
           </time>
           <div className="log-body">
             <div className="log-line">{log.message}</div>
-            {log.agent_id !== undefined && (
+            {shouldRenderAgentFields(log) && (
               <div className="log-fields">
                 <span>{moralLabel(log.moral_label, log.moral_label ?? "", language)}</span>
                 <span>{actionLabel(log.action, language)}</span>
@@ -1303,6 +1302,20 @@ function SystemLog({ result, language }: { result: ScenarioResult | null; langua
         </div>
       ))}
     </div>
+  );
+}
+
+function shouldRenderAgentFields(log: LogEntry) {
+  return Boolean(
+    log.moral_label
+    || log.action
+    || log.result
+    || log.decision_source
+    || log.allocated_food !== undefined
+    || log.effective_need !== undefined
+    || log.fatigue_after !== undefined
+    || log.status_after !== undefined
+    || log.wellbeing_after !== undefined
   );
 }
 

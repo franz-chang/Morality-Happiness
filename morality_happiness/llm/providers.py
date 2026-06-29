@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from ..settings import env_override, llm_provider_settings, normalize_provider
+from .traces import append_llm_trace
 
 
 LLM_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
@@ -29,28 +31,14 @@ LLM_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
         "label": "DeepSeek-V4-flash",
         "model": "deepseek-v4-flash",
         "base_url": "https://api.deepseek.com/v1",
-        "description": "Camel-AI + DeepSeek-V4-flash 行为决策接口。",
+        "description": "OpenAI-Compatible direct-json + DeepSeek-V4-flash 行为决策接口。",
     },
     {
         "id": "local-deepseek",
         "label": "本地DeepSeek",
         "model": "deepseek-v4-flash",
-        "base_url": "https://uni-api.cstcloud.cn/v1",
-        "description": "中国科技云 Uni-API OpenAI-Compatible 接口，调用 deepseek-v4-flash。",
-    },
-    {
-        "id": "qwen3",
-        "label": "Qwen3 (Ollama)",
-        "model": "qwen3:8b",
-        "base_url": "http://localhost:11434",
-        "description": "Ollama 原生 /api/chat 接口，可指向远程服务器。",
-    },
-    {
-        "id": "qwen-bailian",
-        "label": "阿里云Qwen",
-        "model": "qwen-plus",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "description": "阿里云百炼 OpenAI-Compatible Chat Completions 接口。",
+        "base_url": "https://uni-api-global.cstcloud.cn/v1",
+        "description": "中国科技云 Uni-API Global OpenAI-Compatible direct-json 接口，调用 deepseek-v4-flash。",
     },
 )
 
@@ -63,6 +51,16 @@ def _chat_template_kwargs(settings: dict[str, Any], *, default_thinking: bool | 
     if default_thinking is not None and "thinking" not in kwargs:
         kwargs["thinking"] = default_thinking
     return kwargs
+
+
+def _normalize_chat_base_url(base_url: str) -> str:
+    cleaned = str(base_url or "").strip().rstrip("/")
+    if not cleaned:
+        return ""
+    parsed = urllib.parse.urlparse(cleaned)
+    if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
+        return f"{cleaned}/v1"
+    return cleaned
 
 
 def _openai_extra_body(config: "LLMProviderConfig") -> dict[str, Any]:
@@ -90,6 +88,7 @@ class LLMProviderConfig:
     temperature: float = 0.2
     timeout_seconds: int = 60
     max_tokens: int = 256
+    max_retries: int = 3
     response_mode: str = "auto"
     chat_template_kwargs: dict[str, Any] = field(default_factory=dict)
 
@@ -106,10 +105,11 @@ class LLMProviderConfig:
                 provider=provider,
                 model=str(env_override("OPENAI_MODEL", settings.get("model", "gpt-4o-mini"))),
                 api_key=str(env_override("OPENAI_API_KEY", settings.get("api_key", "replace-me"))),
-                base_url=str(env_override("OPENAI_BASE_URL", settings.get("base_url", ""))),
+                base_url=_normalize_chat_base_url(str(env_override("OPENAI_BASE_URL", settings.get("base_url", "")))),
                 temperature=float(settings.get("temperature", 0.2)),
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
+                max_retries=int(settings.get("max_retries", 3)),
                 response_mode=str(settings.get("response_mode", "auto")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -124,6 +124,7 @@ class LLMProviderConfig:
                 temperature=float(settings.get("temperature", 0.2)),
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
+                max_retries=int(settings.get("max_retries", 3)),
                 response_mode=str(settings.get("response_mode", "auto")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -145,12 +146,16 @@ class LLMProviderConfig:
                 base_url=str(
                     env_override(
                         "LOCAL_DEEPSEEK_BASE_URL",
-                        env_override("CSTCLOUD_BASE_URL", settings.get("base_url", "https://uni-api.cstcloud.cn/v1")),
+                        env_override(
+                            "CSTCLOUD_BASE_URL",
+                            settings.get("base_url", "https://uni-api-global.cstcloud.cn/v1"),
+                        ),
                     )
                 ),
                 temperature=float(settings.get("temperature", 0.2)),
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
+                max_retries=int(settings.get("max_retries", 0)),
                 response_mode=str(settings.get("response_mode", "instruct")),
                 chat_template_kwargs=_chat_template_kwargs(settings, default_thinking=False),
             )
@@ -165,6 +170,7 @@ class LLMProviderConfig:
                 temperature=float(settings.get("temperature", 0.2)),
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
+                max_retries=int(settings.get("max_retries", 3)),
                 response_mode=str(settings.get("response_mode", "auto")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -195,6 +201,7 @@ class LLMProviderConfig:
                 temperature=float(settings.get("temperature", 0.2)),
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
+                max_retries=int(settings.get("max_retries", 3)),
                 response_mode=str(settings.get("response_mode", "instruct")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -206,6 +213,7 @@ class LLMProviderConfig:
             temperature=float(settings.get("temperature", 0.2)),
             timeout_seconds=int(settings.get("timeout_seconds", 60)),
             max_tokens=int(settings.get("max_tokens", 256)),
+            max_retries=int(settings.get("max_retries", 3)),
             response_mode=str(settings.get("response_mode", "auto")),
             chat_template_kwargs=_chat_template_kwargs(settings),
         )
@@ -232,13 +240,97 @@ class LLMProvider(Protocol):
 
 class RuleProvider:
     def complete(self, prompt: str) -> str:
-        return json.dumps(
+        output = json.dumps(
             {
                 "score": None,
                 "reason": "rule-provider: deterministic wellbeing engine is active",
             },
             ensure_ascii=False,
         )
+        append_llm_trace(
+            provider="rule",
+            model="deterministic-wellbeing-engine",
+            stage="rule",
+            prompt=prompt,
+            response=output,
+            ok=True,
+        )
+        return output
+
+
+class DirectJSONProvider:
+    """OpenAI-compatible JSON-only adapter used when Camel overhead is undesirable."""
+
+    def __init__(self, config: LLMProviderConfig) -> None:
+        if not config.api_key or not config.base_url:
+            raise RuntimeError(f"{config.provider} direct JSON provider requires api_key and base_url.")
+        self.config = config
+        self.system_message = (
+            "You are a behavior decision engine for a multi-agent simulation. "
+            "Return exactly one compact JSON object. Do not use markdown."
+        )
+
+    def complete(self, prompt: str) -> str:
+        try:
+            from openai import OpenAI
+        except Exception as exc:  # pragma: no cover - depends on optional package
+            raise RuntimeError("openai package is required for direct JSON provider.") from exc
+
+        client = OpenAI(
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
+            timeout=float(self.config.timeout_seconds or 30),
+            max_retries=max(0, int(self.config.max_retries)),
+        )
+        request_kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [
+                {"role": "system", "content": self.system_message},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": self.config.temperature,
+            "max_tokens": max(int(self.config.max_tokens or 256), 128),
+            "response_format": {"type": "json_object"},
+        }
+        if self.config.provider == "deepseek":
+            request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        try:
+            response = client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="direct-json",
+                prompt=prompt,
+                response="",
+                ok=False,
+                error=str(exc),
+            )
+            raise
+        message = response.choices[0].message
+        content = str(message.content or "").strip()
+        if content:
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="direct-json",
+                prompt=prompt,
+                response=content,
+                ok=True,
+            )
+            return content
+        reasoning = getattr(message, "reasoning_content", None)
+        error = f"模型未返回最终JSON内容。reasoning={str(reasoning)[:240] if reasoning else ''}"
+        append_llm_trace(
+            provider=self.config.provider,
+            model=self.config.model,
+            stage="direct-json",
+            prompt=prompt,
+            response=str(reasoning or ""),
+            ok=False,
+            error=error,
+        )
+        raise RuntimeError(error)
 
 
 class CamelProvider:
@@ -246,6 +338,10 @@ class CamelProvider:
 
     def __init__(self, config: LLMProviderConfig) -> None:
         self.config = config
+        self.system_message = (
+            "You are a wellbeing evaluator for a computational social science "
+            "multi-agent simulation. Return compact JSON only."
+        )
         try:
             from camel.agents import ChatAgent
             from camel.models import ModelFactory
@@ -273,12 +369,10 @@ class CamelProvider:
             kwargs["api_key"] = config.api_key
         if config.timeout_seconds:
             kwargs["timeout"] = float(config.timeout_seconds)
+        kwargs["max_retries"] = max(0, int(config.max_retries))
         model = ModelFactory.create(**kwargs)
         self.agent = ChatAgent(
-            system_message=(
-                "You are a wellbeing evaluator for a computational social science "
-                "multi-agent simulation. Return compact JSON only."
-            ),
+            system_message=self.system_message,
             model=model,
         )
 
@@ -298,12 +392,117 @@ class CamelProvider:
         )
 
     def complete(self, prompt: str) -> str:  # pragma: no cover - requires external API
-        response = self.agent.step(prompt)
-        if hasattr(response, "msg") and hasattr(response.msg, "content"):
-            return str(response.msg.content)
-        if hasattr(response, "msgs") and response.msgs:
-            return str(response.msgs[0].content)
-        return str(response)
+        response = None
+        camel_error: Exception | None = None
+        try:
+            response = self.agent.step(prompt)
+            if hasattr(response, "msg") and hasattr(response.msg, "content"):
+                content = str(response.msg.content or "").strip()
+                if content:
+                    append_llm_trace(
+                        provider=self.config.provider,
+                        model=self.config.model,
+                        stage="camel",
+                        prompt=prompt,
+                        response=content,
+                        ok=True,
+                    )
+                    return content
+            if hasattr(response, "msgs") and response.msgs:
+                content = str(response.msgs[0].content or "").strip()
+                if content:
+                    append_llm_trace(
+                        provider=self.config.provider,
+                        model=self.config.model,
+                        stage="camel",
+                        prompt=prompt,
+                        response=content,
+                        ok=True,
+                    )
+                    return content
+        except Exception as exc:
+            camel_error = exc
+
+        if self._supports_direct_json_fallback():
+            return self._direct_json_complete(prompt)
+
+        if camel_error is not None:
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="camel",
+                prompt=prompt,
+                response="",
+                ok=False,
+                error=str(camel_error),
+            )
+            raise camel_error
+        output = str(response)
+        append_llm_trace(
+            provider=self.config.provider,
+            model=self.config.model,
+            stage="camel",
+            prompt=prompt,
+            response=output,
+            ok=bool(output.strip()),
+            error="" if output.strip() else "empty response",
+        )
+        return output
+
+    def _supports_direct_json_fallback(self) -> bool:
+        return self.config.provider in {"openai", "qwen-bailian"} and bool(
+            self.config.api_key and self.config.base_url
+        )
+
+    def _direct_json_complete(self, prompt: str) -> str:
+        try:
+            from openai import OpenAI
+        except Exception as exc:  # pragma: no cover - depends on optional package
+            raise RuntimeError("openai package is required for direct JSON fallback.") from exc
+
+        client = OpenAI(
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
+            timeout=float(self.config.timeout_seconds or 30),
+            max_retries=max(0, int(self.config.max_retries)),
+        )
+        request_kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [
+                {"role": "system", "content": self.system_message + " Return exactly one JSON object."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": self.config.temperature,
+            "max_tokens": max(int(self.config.max_tokens or 256), 1024),
+            "response_format": {"type": "json_object"},
+        }
+        if self.config.provider == "deepseek":
+            request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        response = client.chat.completions.create(**request_kwargs)
+        message = response.choices[0].message
+        content = str(message.content or "").strip()
+        if content:
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="direct-json-fallback",
+                prompt=prompt,
+                response=content,
+                ok=True,
+            )
+            return content
+        reasoning = getattr(message, "reasoning_content", None)
+        error = f"模型未返回最终JSON内容。reasoning={str(reasoning)[:240] if reasoning else ''}"
+        append_llm_trace(
+            provider=self.config.provider,
+            model=self.config.model,
+            stage="direct-json-fallback",
+            prompt=prompt,
+            response=str(reasoning or ""),
+            ok=False,
+            error=error,
+        )
+        raise RuntimeError(error)
 
 
 class OllamaProvider:
@@ -353,14 +552,59 @@ class OllamaProvider:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:  # pragma: no cover - requires external service
             detail = exc.read().decode("utf-8", errors="replace")
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="ollama",
+                prompt=prompt,
+                response=detail[:500],
+                ok=False,
+                error=f"Ollama API HTTP {exc.code}",
+            )
             raise RuntimeError(f"Ollama API HTTP {exc.code}: {detail[:500]}") from exc
         except urllib.error.URLError as exc:  # pragma: no cover - requires external service
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="ollama",
+                prompt=prompt,
+                response="",
+                ok=False,
+                error=f"Ollama API unavailable at {url}: {exc}",
+            )
             raise RuntimeError(f"Ollama API unavailable at {url}: {exc}") from exc
         message = body.get("message", {}) if isinstance(body, dict) else {}
         if isinstance(message, dict) and message.get("content"):
-            return str(message["content"])
+            content = str(message["content"])
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="ollama",
+                prompt=prompt,
+                response=content,
+                ok=True,
+            )
+            return content
         if isinstance(body, dict) and body.get("response"):
-            return str(body["response"])
+            content = str(body["response"])
+            append_llm_trace(
+                provider=self.config.provider,
+                model=self.config.model,
+                stage="ollama",
+                prompt=prompt,
+                response=content,
+                ok=True,
+            )
+            return content
+        append_llm_trace(
+            provider=self.config.provider,
+            model=self.config.model,
+            stage="ollama",
+            prompt=prompt,
+            response=json.dumps(body, ensure_ascii=False)[:500],
+            ok=False,
+            error="Ollama API response did not include message.content.",
+        )
         raise RuntimeError("Ollama API response did not include message.content.")
 
 
@@ -369,6 +613,13 @@ def build_llm_provider(config: LLMProviderConfig | None = None, *, allow_fallbac
     provider = config.provider.lower()
     if provider == "rule":
         return RuleProvider()
+    if provider in {"deepseek", "local-deepseek"}:
+        try:
+            return DirectJSONProvider(config)
+        except Exception:
+            if not allow_fallback:
+                raise
+            return RuleProvider()
     if provider == "qwen3":
         try:
             return OllamaProvider(config)
@@ -423,6 +674,26 @@ def provider_status(provider: str) -> LLMProviderStatus:
                 "Ollama 原生 /api/chat 配置缺少 model 或 base_url；模型行为驱动不可用。"
                 if missing_config
                 else f"Ollama 原生 /api/chat 已配置，将调用 {base_url}/api/chat。"
+            ),
+        )
+    if config.provider in {"deepseek", "local-deepseek"}:
+        missing_key = config.api_key in {"", "replace-me", "这里是API"}
+        provider_label = "DeepSeek" if config.provider == "deepseek" else "本地DeepSeek"
+        mode_note = ""
+        if config.provider == "local-deepseek":
+            thinking = config.chat_template_kwargs.get("thinking")
+            mode_note = f"；response_mode={config.response_mode}, thinking={thinking}"
+        return LLMProviderStatus(
+            framework="openai-compatible",
+            provider=config.provider,
+            model=config.model,
+            base_url=config.base_url,
+            active=not missing_key,
+            using_fallback=missing_key,
+            reason=(
+                f"{provider_label} direct-json provider 已配置，但当前使用缺省 API key；模型行为驱动不可用。"
+                if missing_key
+                else f"{provider_label} direct-json provider 已就绪；不经过 Camel-AI{mode_note}。"
             ),
         )
     try:

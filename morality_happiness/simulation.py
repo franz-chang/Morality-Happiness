@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import json
 import random
+import time
 from typing import Any, Callable
 
 from .config import SCENARIOS, SimulationParameters
@@ -22,6 +23,7 @@ from .models import (
     Scenario,
     Status,
 )
+from .settings import llm_provider_settings
 from .utils import clip, gini, mean, safe_div
 from .wellbeing import evaluate_wellbeing
 
@@ -65,7 +67,10 @@ class Simulation:
         self.model_status = provider_status(self.params.llm_provider).to_dict()
         self.llm_provider = None
         self.llm_config: LLMProviderConfig | None = None
+        self.llm_decision_retries = 0
         if self.params.llm_provider != "rule":
+            provider_settings = llm_provider_settings(self.params.llm_provider)
+            self.llm_decision_retries = max(0, int(provider_settings.get("decision_retries", 2)))
             self._activate_llm_decision_driver()
 
     def _activate_llm_decision_driver(self) -> None:
@@ -217,11 +222,11 @@ class Simulation:
                 )
             prior_decisions.append(
                 {
-                    "agent_id": agent.id,
-                    "moral_type": agent.moral_type.value,
-                    "effort": round(decision.effort, 3),
-                    "share_rate": round(decision.share_rate, 3),
-                    "restraint_rate": round(decision.restraint_rate, 3),
+                    "id": agent.id,
+                    "m": agent.moral_type.value,
+                    "e": round(decision.effort, 3),
+                    "s": round(decision.share_rate, 3),
+                    "r": round(decision.restraint_rate, 3),
                 }
             )
         if self.scenario.mode is ActionMode.ORGANIZED:
@@ -435,26 +440,121 @@ class Simulation:
             tick=tick,
             prior_decisions=prior_decisions,
         )
-        try:
-            raw = self.llm_provider.complete(prompt)
-            payload = self._parse_llm_decision(raw)
-        except Exception as exc:
-            raise RuntimeError(
-                f"{self.model_status.get('model')} 第 {tick} 轮 Agent {agent.id} 行为决策失败: {exc}"
-            ) from exc
+        total_attempts = 1 + self.llm_decision_retries
+        last_error: Exception | None = None
 
-        effort = self._required_unit_float(payload, "effort")
-        if agent.status is Status.EXTREME_FATIGUE:
-            effort = 0.0
-        return AgentDecision(
-            moral_fit=moral_fit,
-            effort=effort,
-            compliance_action=self._required_unit_float(payload, "compliance_action"),
-            share_rate=self._required_unit_float(payload, "share_rate"),
-            restraint_rate=self._required_unit_float(payload, "restraint_rate"),
-            decision_source=f"llm:{self.model_status.get('provider')}",
-            decision_reason=str(payload.get("reason", "")).strip()[:280],
+        for attempt in range(1, total_attempts + 1):
+            raw = ""
+            try:
+                raw = self.llm_provider.complete(prompt)
+                payload = self._parse_llm_decision(raw)
+                rule_default = self._rule_decide(agent, pressure_index, moral_fit)
+                repairs: list[str] = []
+                effort = self._unit_float_or_default(payload, "effort", rule_default.effort, repairs)
+                if agent.status is Status.EXTREME_FATIGUE:
+                    effort = 0.0
+                compliance_action = self._unit_float_or_default(
+                    payload,
+                    "compliance_action",
+                    rule_default.compliance_action,
+                    repairs,
+                )
+                share_rate = self._unit_float_or_default(payload, "share_rate", rule_default.share_rate, repairs)
+                restraint_rate = self._unit_float_or_default(
+                    payload,
+                    "restraint_rate",
+                    rule_default.restraint_rate,
+                    repairs,
+                )
+                if len(repairs) >= 4:
+                    raise ValueError(f"LLM JSON 数值字段全部不可用: {repairs}")
+                reason = self._normalize_decision_reason(payload.get("reason", ""))
+                decision = AgentDecision(
+                    moral_fit=moral_fit,
+                    effort=effort,
+                    compliance_action=compliance_action,
+                    share_rate=share_rate,
+                    restraint_rate=restraint_rate,
+                    decision_source=f"llm:{self.model_status.get('provider')}",
+                    decision_reason=reason,
+                )
+                if repairs:
+                    self._append_system_log(
+                        {
+                            "tick": tick,
+                            "scenario_id": self.scenario.id,
+                            "level": "warning",
+                            "event": "llm_decision_repaired",
+                            "message": (
+                                f"{self.model_status.get('model')} 第 {tick} 轮 Agent {agent.id} "
+                                f"返回 JSON 字段不完整，已用规则基准修复: {', '.join(repairs)}"
+                            ),
+                            "agent_id": agent.id,
+                            "repairs": repairs,
+                        }
+                    )
+                if attempt > 1:
+                    self._append_system_log(
+                        {
+                            "tick": tick,
+                            "scenario_id": self.scenario.id,
+                            "level": "info",
+                            "event": "llm_decision_retry_success",
+                            "message": (
+                                f"{self.model_status.get('model')} 第 {tick} 轮 Agent {agent.id} "
+                                f"在第 {attempt}/{total_attempts} 次尝试时完成行为决策。"
+                            ),
+                            "agent_id": agent.id,
+                            "attempt": attempt,
+                            "total_attempts": total_attempts,
+                        }
+                    )
+                return decision
+            except Exception as exc:
+                last_error = exc
+                detail = str(exc)
+                raw_excerpt = self._compact_response_excerpt(raw)
+                if raw_excerpt:
+                    detail = f"{detail}；响应片段: {raw_excerpt}"
+                if attempt < total_attempts:
+                    self._append_system_log(
+                        {
+                            "tick": tick,
+                            "scenario_id": self.scenario.id,
+                            "level": "warning",
+                            "event": "llm_decision_retry",
+                            "message": (
+                                f"{self.model_status.get('model')} 第 {tick} 轮 Agent {agent.id} "
+                                f"行为决策第 {attempt}/{total_attempts} 次失败，正在重试: {detail}"
+                            ),
+                            "agent_id": agent.id,
+                            "attempt": attempt,
+                            "total_attempts": total_attempts,
+                        }
+                    )
+                    time.sleep(min(0.6 * attempt, 1.5))
+                    continue
+                break
+
+        fallback = self._rule_decide(agent, pressure_index, moral_fit)
+        fallback.decision_source = f"llm-fallback:{self.model_status.get('provider')}"
+        fallback.decision_reason = f"LLM多次失败后安全兜底: {str(last_error)[:120]}"
+        self._append_system_log(
+            {
+                "tick": tick,
+                "scenario_id": self.scenario.id,
+                "level": "warning",
+                "event": "llm_decision_fallback",
+                "message": (
+                    f"{self.model_status.get('model')} 第 {tick} 轮 Agent {agent.id} "
+                    f"重试 {total_attempts} 次后仍失败，已使用本地安全兜底完成本步: {last_error}"
+                ),
+                "agent_id": agent.id,
+                "attempt": total_attempts,
+                "total_attempts": total_attempts,
+            }
         )
+        return fallback
 
     def _agent_decision_prompt(
         self,
@@ -467,71 +567,51 @@ class Simulation:
     ) -> str:
         observed_prior = prior_decisions[-12:]
         payload = {
-            "task": "decide_one_agent_action",
-            "output_schema": {
-                "effort": "float 0..1; hunting/production effort for this tick",
-                "compliance_action": "float 0..1; willingness to follow collective or group coordination",
-                "share_rate": "float 0..1; willingness to share surplus or accept redistribution",
-                "restraint_rate": "float 0..1; willingness to restrain own need/consumption under pressure",
-                "reason": "brief Chinese explanation, <= 60 chars",
-            },
-            "scenario": {
+            "sc": {
                 "id": self.scenario.id,
-                "name": self.scenario.name,
-                "mode": self.scenario.mode.value,
-                "resource_label": self.scenario.resource_label,
-                "scarcity_pressure": round(self.scenario.scarcity_pressure, 4),
-                "opportunity": round(self.scenario.opportunity, 4),
-                "collectivization": round(self.scenario.collectivization, 4),
-                "individualization": round(self.scenario.individualization, 4),
+                "m": self.scenario.mode.value,
+                "sp": round(self.scenario.scarcity_pressure, 4),
+                "op": round(self.scenario.opportunity, 4),
+                "c": round(self.scenario.collectivization, 4),
+                "i": round(self.scenario.individualization, 4),
             },
-            "tick_context": {
-                "tick": tick,
-                "population_size": len(self.agents),
-                "pressure_index": round(pressure_index, 4),
-                "last_underfed_rate": round(self.last_underfed_rate, 4),
-                "same_tick_decision_order": "Agents decide sequentially by id; previous same-tick decisions are observable only as summaries.",
-                "prior_decisions_in_this_tick": observed_prior,
-                "prior_decision_count": len(prior_decisions),
+            "ctx": {
+                "t": tick,
+                "n": len(self.agents),
+                "p": round(pressure_index, 4),
+                "u": round(self.last_underfed_rate, 4),
+                "prior": observed_prior,
             },
-            "agent": {
+            "ag": {
                 "id": agent.id,
-                "age_group": agent.age_group.value,
-                "age_label": agent.age_group.label,
+                "age": agent.age_group.value,
                 "sex": agent.sex,
-                "moral_type": agent.moral_type.value,
-                "moral_label": agent.moral_type.label,
-                "moral_weights": {key: round(value, 4) for key, value in agent.moral_weights.items()},
-                "moral_fit_to_scenario": round(moral_fit, 4),
-                "physical": round(agent.physical, 4),
-                "exploration": round(agent.exploration, 4),
-                "coordination": round(agent.coordination, 4),
-                "compliance_trait": round(agent.compliance, 4),
+                "m": agent.moral_type.value,
+                "mw": {key: round(value, 3) for key, value in agent.moral_weights.items()},
+                "fit": round(moral_fit, 4),
+                "phy": round(agent.physical, 4),
+                "exp": round(agent.exploration, 4),
+                "coor": round(agent.coordination, 4),
+                "comp": round(agent.compliance, 4),
                 "need": round(agent.need, 4),
-                "wellbeing": round(agent.wellbeing, 4),
-                "food_reserve": round(agent.food_reserve, 4),
-                "fatigue": round(agent.fatigue, 4),
-                "status": agent.status.value,
-                "group_id": agent.group_id,
-                "previous_group_id": agent.previous_group_id,
-                "cumulative_food": round(agent.cumulative_food, 4),
+                "well": round(agent.wellbeing, 4),
+                "res": round(agent.food_reserve, 4),
+                "fat": round(agent.fatigue, 4),
+                "st": agent.status.value,
+                "gid": agent.group_id,
             },
-            "hard_constraints": [
-                "Return JSON object only; no markdown, no prose outside JSON.",
-                "All four numeric action fields must be finite numbers in [0, 1].",
-                "If status is Extreme_Fatigue, set effort to 0 and prefer high restraint_rate.",
-                "Do not optimize only food. Balance material survival, moral consistency, autonomy, fairness, belonging, and fatigue.",
-                "Treat this Agent as an independent behavior subject, not as an aggregate statistic.",
-            ],
         }
         return (
-            "你是《道德幸福 Agent》Multi-Agent 仿真中的单个 Agent 行为决策器。\n"
-            "设计原则: Agent 的幸福由物质保障、道德一致性、自主感、社会归属、公平感、压力与疲劳共同构成；"
-            "不同道德类型会在自我发展、自我克制、利他发展、利他克制之间形成不同权重。\n"
-            "请根据以下 JSON 状态，为当前 Agent 在当前轮次做一次独立行为判断。\n"
-            "同一轮中 Agent 按 id 顺序判断，当前 Agent 可以参考此前同轮 Agent 的摘要，但不能改写它们。\n"
-            "只返回符合 schema 的紧凑 JSON。\n"
-            f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+            "Return exactly one compact JSON object. No markdown, no prose, no extra keys. "
+            'Template: {"effort":0.6,"compliance_action":0.7,'
+            '"share_rate":0.5,"restraint_rate":0.2,"reason":"fit"}. '
+            "effort, compliance_action, share_rate, restraint_rate must be numbers from 0 to 1. "
+            "compliance_action means obedience score; never output an action word. "
+            "reason must be one short code: survival, fit, fair, fatigue, reserve, or belong. "
+            "If ag.st is Extreme_Fatigue, set effort=0 and restraint_rate>=0.7. "
+            "Balance survival, moral fit, autonomy, belonging, fairness, and fatigue. "
+            "Data:"
+            f"{json.dumps(payload, ensure_ascii=True, separators=(',', ':'))}"
         )
 
     @staticmethod
@@ -548,6 +628,8 @@ class Simulation:
         data = json.loads(text[start:end + 1])
         if isinstance(data, dict) and isinstance(data.get("decision"), dict):
             data = data["decision"]
+        if isinstance(data, dict) and isinstance(data.get("out"), dict):
+            data = data["out"]
         if not isinstance(data, dict):
             raise ValueError("JSON 顶层必须是对象")
         return data
@@ -563,6 +645,49 @@ class Simulation:
         if not math.isfinite(value):
             raise ValueError(f"{key} 必须是有限数值")
         return clip(value, 0.0, 1.0)
+
+    @staticmethod
+    def _unit_float_or_default(
+        payload: dict[str, Any],
+        key: str,
+        default: float,
+        repairs: list[str],
+    ) -> float:
+        try:
+            if key not in payload:
+                raise ValueError("missing")
+            value = payload[key]
+            if isinstance(value, str):
+                value = value.strip()
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError("non-finite")
+            return clip(number, 0.0, 1.0)
+        except (TypeError, ValueError):
+            repairs.append(f"{key}->{default:.2f}")
+            return clip(default, 0.0, 1.0)
+
+    @staticmethod
+    def _normalize_decision_reason(raw: Any) -> str:
+        text = str(raw or "").strip().replace("\n", " ")
+        if not text:
+            return "fit"
+        translations = {
+            "survival": "生存优先",
+            "fit": "道德适配",
+            "fair": "公平分配",
+            "fatigue": "控制疲劳",
+            "reserve": "保留储备",
+            "belong": "群体归属",
+        }
+        return translations.get(text.lower(), text[:80])
+
+    @staticmethod
+    def _compact_response_excerpt(raw: str, limit: int = 160) -> str:
+        text = str(raw or "").strip().replace("\n", " ")
+        if not text:
+            return ""
+        return text[:limit]
 
     def _agent_ability(self, agent: AgentState, mode: ActionMode | None = None) -> float:
         mode = mode or self.scenario.mode

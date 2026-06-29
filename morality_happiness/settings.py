@@ -49,6 +49,8 @@ def llm_provider_settings(provider: str) -> dict[str, Any]:
     settings.setdefault("temperature", llm_config.get("temperature", 0.2))
     settings.setdefault("timeout_seconds", llm_config.get("timeout_seconds", 60))
     settings.setdefault("max_tokens", llm_config.get("max_tokens", 256))
+    if "max_retries" in llm_config:
+        settings.setdefault("max_retries", llm_config["max_retries"])
     return settings
 
 

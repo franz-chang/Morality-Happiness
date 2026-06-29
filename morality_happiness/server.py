@@ -4,13 +4,22 @@ import argparse
 import json
 import threading
 import time
+import urllib.error
+import urllib.request
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from .config import SCENARIOS, SimulationParameters
-from .llm import LLMProviderConfig, build_llm_provider, provider_options, provider_status
+from .llm import (
+    LLMProviderConfig,
+    build_llm_provider,
+    clear_llm_traces,
+    list_llm_traces,
+    provider_options,
+    provider_status,
+)
 from .settings import server_defaults
 from .simulation import run_batch
 
@@ -42,12 +51,19 @@ class APIHandler(SimpleHTTPRequestHandler):
                 }
             )
             return
+        if self.path.startswith("/api/llm-traces"):
+            self._json({"items": list_llm_traces(self._trace_limit())})
+            return
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/stop":
             STOP_EVENT.set()
             self._json({"stopped": True})
+            return
+        if self.path == "/api/llm-traces/clear":
+            clear_llm_traces()
+            self._json({"ok": True, "cleared": True})
             return
         if self.path == "/api/model-test":
             try:
@@ -128,6 +144,7 @@ class APIHandler(SimpleHTTPRequestHandler):
         status = provider_status(provider)
         config = LLMProviderConfig.from_config(provider)
         started = time.perf_counter()
+        diagnostics: dict[str, Any] = {}
 
         if config.provider == "rule":
             return {
@@ -151,11 +168,35 @@ class APIHandler(SimpleHTTPRequestHandler):
                 "status": status.to_dict(),
             }
 
+        if config.provider == "local-deepseek":
+            diagnostics = self._probe_openai_compatible_route(config)
+
         config.timeout_seconds = min(config.timeout_seconds, 20)
         config.max_tokens = min(config.max_tokens, 64)
         config.temperature = 0.0
         provider_impl = build_llm_provider(config, allow_fallback=False)
-        raw = provider_impl.complete('Return compact JSON only: {"ok": true, "route": "test"}')
+        try:
+            raw = provider_impl.complete('Return compact JSON only: {"ok": true, "route": "test"}')
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            message = str(exc)
+            if diagnostics.get("models_ok"):
+                model_list = diagnostics.get("models_sample", [])
+                message = (
+                    f"模型列表探测正常，但 chat/completions 调用失败: {exc}"
+                    + (f"；已探测到模型: {', '.join(model_list[:5])}" if model_list else "")
+                )
+            return {
+                "ok": False,
+                "provider": status.provider,
+                "model": config.model,
+                "base_url": config.base_url,
+                "latency_ms": latency_ms,
+                "message": message,
+                "error": str(exc),
+                "diagnostics": diagnostics,
+                "status": status.to_dict(),
+            }
         latency_ms = int((time.perf_counter() - started) * 1000)
         is_valid = bool(str(raw).strip())
         return {
@@ -166,8 +207,41 @@ class APIHandler(SimpleHTTPRequestHandler):
             "latency_ms": latency_ms,
             "message": "模型通路测试成功。" if is_valid else "模型返回为空。",
             "sample": str(raw).strip()[:240],
+            "diagnostics": diagnostics,
             "status": status.to_dict(),
         }
+
+    def _probe_openai_compatible_route(self, config: LLMProviderConfig) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "models_ok": False,
+            "model_present": False,
+            "models_sample": [],
+        }
+        if not config.base_url or not config.api_key:
+            return result
+        url = config.base_url.rstrip("/") + "/models"
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {config.api_key}"}, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=min(config.timeout_seconds, 8)) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            result["models_error"] = f"HTTP {exc.code}: {detail[:300]}"
+            return result
+        except Exception as exc:
+            result["models_error"] = str(exc)
+            return result
+
+        data = body.get("data", []) if isinstance(body, dict) else []
+        model_ids = [
+            str(item.get("id"))
+            for item in data
+            if isinstance(item, dict) and item.get("id")
+        ]
+        result["models_ok"] = True
+        result["models_sample"] = model_ids[:8]
+        result["model_present"] = config.model in model_ids
+        return result
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -183,6 +257,16 @@ class APIHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _trace_limit(self) -> int:
+        try:
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(self.path).query)
+            raw = query.get("limit", ["80"])[0]
+            return max(1, min(200, int(raw)))
+        except Exception:
+            return 80
 
 
 def main(argv: list[str] | None = None) -> None:
