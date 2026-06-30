@@ -171,7 +171,8 @@ class APIHandler(SimpleHTTPRequestHandler):
         if config.provider == "local-deepseek":
             diagnostics = self._probe_openai_compatible_route(config)
 
-        config.timeout_seconds = min(config.timeout_seconds, 20)
+        timeout_cap = 45 if config.provider == "local-deepseek" else 20
+        config.timeout_seconds = min(config.timeout_seconds, timeout_cap)
         config.max_tokens = min(config.max_tokens, 64)
         config.temperature = 0.0
         provider_impl = build_llm_provider(config, allow_fallback=False)

@@ -67,7 +67,7 @@ llm:
       api_key: "这里是API"
       base_url: "https://uni-api-global.cstcloud.cn/v1"
       response_mode: "instruct"
-      timeout_seconds: 12
+      timeout_seconds: 30
       max_retries: 0
       decision_retries: 1
       max_tokens: 160
