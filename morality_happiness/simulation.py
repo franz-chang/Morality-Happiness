@@ -565,6 +565,15 @@ class Simulation:
         tick: int,
         prior_decisions: list[dict[str, Any]],
     ) -> str:
+        if self.model_status.get("provider") == "local-deepseek":
+            return self._compact_agent_decision_prompt(
+                agent=agent,
+                pressure_index=pressure_index,
+                moral_fit=moral_fit,
+                tick=tick,
+                prior_decisions=prior_decisions,
+            )
+
         observed_prior = prior_decisions[-12:]
         payload = {
             "sc": {
@@ -612,6 +621,63 @@ class Simulation:
             "Balance survival, moral fit, autonomy, belonging, fairness, and fatigue. "
             "Data:"
             f"{json.dumps(payload, ensure_ascii=True, separators=(',', ':'))}"
+        )
+
+    def _compact_agent_decision_prompt(
+        self,
+        *,
+        agent: AgentState,
+        pressure_index: float,
+        moral_fit: float,
+        tick: int,
+        prior_decisions: list[dict[str, Any]],
+    ) -> str:
+        moral_code = {
+            MoralType.SELF_DEVELOPMENT: "sd",
+            MoralType.SELF_RESTRAINT: "sr",
+            MoralType.ALTRUISTIC_DEVELOPMENT: "ad",
+            MoralType.ALTRUISTIC_RESTRAINT: "ar",
+        }[agent.moral_type]
+        mode_code = {
+            ActionMode.ORGANIZED: "org",
+            ActionMode.GROUP: "grp",
+            ActionMode.INDIVIDUAL: "ind",
+        }[self.scenario.mode]
+        payload = {
+            "sc": {
+                "id": self.scenario.id,
+                "m": mode_code,
+                "scar": round(self.scenario.scarcity_pressure, 2),
+                "opp": round(self.scenario.opportunity, 2),
+                "coll": round(self.scenario.collectivization, 2),
+                "ind": round(self.scenario.individualization, 2),
+            },
+            "ctx": {
+                "t": tick,
+                "p": round(pressure_index, 2),
+                "u": round(self.last_underfed_rate, 2),
+                "prior": prior_decisions[-4:],
+            },
+            "ag": {
+                "id": agent.id,
+                "age": agent.age_group.value[0],
+                "m": moral_code,
+                "fit": round(moral_fit, 2),
+                "phy": round(agent.physical, 2),
+                "comp": round(agent.compliance, 2),
+                "need": round(agent.need, 2),
+                "well": round(agent.wellbeing, 1),
+                "res": round(agent.food_reserve, 2),
+                "fat": round(agent.fatigue, 2),
+                "st": "xf" if agent.status is Status.EXTREME_FATIGUE else "n",
+            },
+        }
+        return (
+            "JSON only. Keys exactly effort,compliance_action,share_rate,restraint_rate,reason. "
+            "First four are numbers 0..1; compliance_action is obedience score. "
+            "reason one code: survival,fit,fair,fatigue,reserve,belong. "
+            "If ag.st=xf then effort=0 and restraint_rate>=0.7. "
+            f"Data:{json.dumps(payload, ensure_ascii=True, separators=(',', ':'))}"
         )
 
     @staticmethod

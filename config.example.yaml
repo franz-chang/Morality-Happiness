@@ -65,16 +65,19 @@ llm:
       label: "本地DeepSeek"
       model: "deepseek-v4-flash"
       api_key: "这里是API"
-      base_url: "https://uni-api-global.cstcloud.cn/v1"
+      base_url: "https://uni-api.cstcloud.cn/v1"
+      fallback_base_urls:
+        - "https://uni-api-global.cstcloud.cn/v1"
       response_mode: "instruct"
       timeout_seconds: 30
+      route_timeout_seconds: 8
       max_retries: 0
       decision_retries: 1
-      max_tokens: 160
+      max_tokens: 96
       thinking: false
       chat_template_kwargs:
         thinking: false
-      description: "中国科技云 Uni-API Global OpenAI-Compatible direct-json 接口，调用 deepseek-v4-flash；默认关闭 thinking，按 instruct/直接回答模式输出。"
+      description: "中国科技云 Uni-API OpenAI-Compatible direct-json 接口，优先国内入口并自动备用 Global；默认关闭 thinking，按 instruct/直接回答模式输出。"
     qwen3:
       label: "Qwen3 (Ollama)"
       model: "qwen3:2b"

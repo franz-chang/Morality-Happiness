@@ -330,7 +330,7 @@ function App() {
     { id: "rule", label: "规则默认", model: "deterministic-wellbeing-engine", base_url: "", description: "本地规则评分" },
     { id: "openai", label: "OpenAI", model: "gpt-4o-mini", base_url: "", description: "Camel-AI + OpenAI" },
     { id: "deepseek", label: "DeepSeek-V4-flash", model: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1", description: "OpenAI-Compatible direct-json 行为驱动" },
-    { id: "local-deepseek", label: "本地DeepSeek", model: "deepseek-v4-flash", base_url: "https://uni-api-global.cstcloud.cn/v1", description: "中国科技云 Uni-API Global direct-json；默认关闭 thinking，按 instruct/直接回答模式输出" },
+    { id: "local-deepseek", label: "本地DeepSeek", model: "deepseek-v4-flash", base_url: "https://uni-api.cstcloud.cn/v1", description: "中国科技云 Uni-API direct-json；优先国内入口并自动备用 Global" },
   ]);
   const [scenarios, setScenarios] = useState<Scenario[]>(fallbackScenarios);
   const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>(fallbackScenarios.map((s) => s.id));

@@ -11,6 +11,9 @@ from ..settings import env_override, llm_provider_settings, normalize_provider
 from .traces import append_llm_trace
 
 
+_PREFERRED_BASE_URLS: dict[tuple[str, str], str] = {}
+
+
 LLM_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": "rule",
@@ -37,8 +40,8 @@ LLM_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
         "id": "local-deepseek",
         "label": "本地DeepSeek",
         "model": "deepseek-v4-flash",
-        "base_url": "https://uni-api-global.cstcloud.cn/v1",
-        "description": "中国科技云 Uni-API Global OpenAI-Compatible direct-json 接口，调用 deepseek-v4-flash。",
+        "base_url": "https://uni-api.cstcloud.cn/v1",
+        "description": "中国科技云 Uni-API OpenAI-Compatible direct-json 接口，优先国内入口并自动备用 Global。",
     },
 )
 
@@ -61,6 +64,14 @@ def _normalize_chat_base_url(base_url: str) -> str:
     if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
         return f"{cleaned}/v1"
     return cleaned
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip().rstrip("/") for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [item.strip().rstrip("/") for item in value.split(",") if item.strip()]
+    return []
 
 
 def _openai_extra_body(config: "LLMProviderConfig") -> dict[str, Any]:
@@ -89,6 +100,8 @@ class LLMProviderConfig:
     timeout_seconds: int = 60
     max_tokens: int = 256
     max_retries: int = 3
+    route_timeout_seconds: int = 0
+    fallback_base_urls: list[str] = field(default_factory=list)
     response_mode: str = "auto"
     chat_template_kwargs: dict[str, Any] = field(default_factory=dict)
 
@@ -110,6 +123,8 @@ class LLMProviderConfig:
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
                 max_retries=int(settings.get("max_retries", 3)),
+                route_timeout_seconds=int(settings.get("route_timeout_seconds", 0)),
+                fallback_base_urls=_string_list(settings.get("fallback_base_urls", [])),
                 response_mode=str(settings.get("response_mode", "auto")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -125,6 +140,8 @@ class LLMProviderConfig:
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
                 max_retries=int(settings.get("max_retries", 3)),
+                route_timeout_seconds=int(settings.get("route_timeout_seconds", 0)),
+                fallback_base_urls=_string_list(settings.get("fallback_base_urls", [])),
                 response_mode=str(settings.get("response_mode", "auto")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -148,7 +165,7 @@ class LLMProviderConfig:
                         "LOCAL_DEEPSEEK_BASE_URL",
                         env_override(
                             "CSTCLOUD_BASE_URL",
-                            settings.get("base_url", "https://uni-api-global.cstcloud.cn/v1"),
+                            settings.get("base_url", "https://uni-api.cstcloud.cn/v1"),
                         ),
                     )
                 ),
@@ -156,6 +173,10 @@ class LLMProviderConfig:
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
                 max_retries=int(settings.get("max_retries", 0)),
+                route_timeout_seconds=int(settings.get("route_timeout_seconds", 12)),
+                fallback_base_urls=_string_list(
+                    settings.get("fallback_base_urls", ["https://uni-api-global.cstcloud.cn/v1"])
+                ),
                 response_mode=str(settings.get("response_mode", "instruct")),
                 chat_template_kwargs=_chat_template_kwargs(settings, default_thinking=False),
             )
@@ -171,6 +192,8 @@ class LLMProviderConfig:
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
                 max_retries=int(settings.get("max_retries", 3)),
+                route_timeout_seconds=int(settings.get("route_timeout_seconds", 0)),
+                fallback_base_urls=_string_list(settings.get("fallback_base_urls", [])),
                 response_mode=str(settings.get("response_mode", "auto")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -202,6 +225,8 @@ class LLMProviderConfig:
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
                 max_retries=int(settings.get("max_retries", 3)),
+                route_timeout_seconds=int(settings.get("route_timeout_seconds", 0)),
+                fallback_base_urls=_string_list(settings.get("fallback_base_urls", [])),
                 response_mode=str(settings.get("response_mode", "instruct")),
                 chat_template_kwargs=_chat_template_kwargs(settings),
             )
@@ -214,6 +239,8 @@ class LLMProviderConfig:
             timeout_seconds=int(settings.get("timeout_seconds", 60)),
             max_tokens=int(settings.get("max_tokens", 256)),
             max_retries=int(settings.get("max_retries", 3)),
+            route_timeout_seconds=int(settings.get("route_timeout_seconds", 0)),
+            fallback_base_urls=_string_list(settings.get("fallback_base_urls", [])),
             response_mode=str(settings.get("response_mode", "auto")),
             chat_template_kwargs=_chat_template_kwargs(settings),
         )
@@ -265,23 +292,51 @@ class DirectJSONProvider:
         if not config.api_key or not config.base_url:
             raise RuntimeError(f"{config.provider} direct JSON provider requires api_key and base_url.")
         self.config = config
-        self.system_message = (
-            "You are a behavior decision engine for a multi-agent simulation. "
-            "Return exactly one compact JSON object. Do not use markdown."
-        )
-
-    def complete(self, prompt: str) -> str:
         try:
             from openai import OpenAI
         except Exception as exc:  # pragma: no cover - depends on optional package
             raise RuntimeError("openai package is required for direct JSON provider.") from exc
 
-        client = OpenAI(
-            api_key=self.config.api_key,
-            base_url=self.config.base_url,
-            timeout=float(self.config.timeout_seconds or 30),
-            max_retries=max(0, int(self.config.max_retries)),
+        timeout = self._client_timeout()
+        urls = self._candidate_base_urls()
+        self.clients = [
+            (
+                base_url,
+                OpenAI(
+                    api_key=self.config.api_key,
+                    base_url=base_url,
+                    timeout=timeout,
+                    max_retries=max(0, int(self.config.max_retries)),
+                ),
+            )
+            for base_url in urls
+        ]
+        self.system_message = (
+            "You are a behavior decision engine for a multi-agent simulation. "
+            "Return exactly one compact JSON object. Do not use markdown."
         )
+
+    def _candidate_base_urls(self) -> list[str]:
+        seen = set()
+        urls: list[str] = []
+        for raw_url in [self.config.base_url, *self.config.fallback_base_urls]:
+            base_url = str(raw_url or "").strip().rstrip("/")
+            if base_url and base_url not in seen:
+                seen.add(base_url)
+                urls.append(base_url)
+        preferred = _PREFERRED_BASE_URLS.get((self.config.provider, self.config.model))
+        if preferred in urls:
+            urls.insert(0, urls.pop(urls.index(preferred)))
+        return urls
+
+    def _client_timeout(self) -> float:
+        timeout = float(self.config.timeout_seconds or 30)
+        if self.config.provider == "local-deepseek" and self.config.route_timeout_seconds:
+            timeout = min(timeout, float(self.config.route_timeout_seconds))
+        return timeout
+
+    def complete(self, prompt: str) -> str:
+        min_tokens = 80 if self.config.provider == "local-deepseek" else 128
         request_kwargs: dict[str, Any] = {
             "model": self.config.model,
             "messages": [
@@ -289,48 +344,60 @@ class DirectJSONProvider:
                 {"role": "user", "content": prompt},
             ],
             "temperature": self.config.temperature,
-            "max_tokens": max(int(self.config.max_tokens or 256), 128),
+            "max_tokens": max(int(self.config.max_tokens or 256), min_tokens),
             "response_format": {"type": "json_object"},
         }
         if self.config.provider == "deepseek":
             request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-        try:
-            response = client.chat.completions.create(**request_kwargs)
-        except Exception as exc:
+        last_error: Exception | None = None
+        for index, (base_url, client) in enumerate(list(self.clients)):
+            stage = f"direct-json:{urllib.parse.urlparse(base_url).netloc or base_url}"
+            try:
+                response = client.chat.completions.create(**request_kwargs)
+            except Exception as exc:
+                last_error = exc
+                append_llm_trace(
+                    provider=self.config.provider,
+                    model=self.config.model,
+                    stage=stage,
+                    prompt=prompt,
+                    response="",
+                    ok=False,
+                    error=str(exc),
+                )
+                if self.config.provider == "local-deepseek" and index < len(self.clients) - 1:
+                    continue
+                raise
+            message = response.choices[0].message
+            content = str(message.content or "").strip()
+            if content:
+                if index > 0:
+                    self.clients.insert(0, self.clients.pop(index))
+                _PREFERRED_BASE_URLS[(self.config.provider, self.config.model)] = base_url
+                append_llm_trace(
+                    provider=self.config.provider,
+                    model=self.config.model,
+                    stage=stage,
+                    prompt=prompt,
+                    response=content,
+                    ok=True,
+                )
+                return content
+            reasoning = getattr(message, "reasoning_content", None)
+            last_error = RuntimeError(f"模型未返回最终JSON内容。reasoning={str(reasoning)[:240] if reasoning else ''}")
             append_llm_trace(
                 provider=self.config.provider,
                 model=self.config.model,
-                stage="direct-json",
+                stage=stage,
                 prompt=prompt,
-                response="",
+                response=str(reasoning or ""),
                 ok=False,
-                error=str(exc),
+                error=str(last_error),
             )
-            raise
-        message = response.choices[0].message
-        content = str(message.content or "").strip()
-        if content:
-            append_llm_trace(
-                provider=self.config.provider,
-                model=self.config.model,
-                stage="direct-json",
-                prompt=prompt,
-                response=content,
-                ok=True,
-            )
-            return content
-        reasoning = getattr(message, "reasoning_content", None)
-        error = f"模型未返回最终JSON内容。reasoning={str(reasoning)[:240] if reasoning else ''}"
-        append_llm_trace(
-            provider=self.config.provider,
-            model=self.config.model,
-            stage="direct-json",
-            prompt=prompt,
-            response=str(reasoning or ""),
-            ok=False,
-            error=error,
-        )
-        raise RuntimeError(error)
+            if self.config.provider == "local-deepseek" and index < len(self.clients) - 1:
+                continue
+            raise last_error
+        raise RuntimeError(str(last_error or "No OpenAI-compatible route configured."))
 
 
 class CamelProvider:
@@ -682,7 +749,12 @@ def provider_status(provider: str) -> LLMProviderStatus:
         mode_note = ""
         if config.provider == "local-deepseek":
             thinking = config.chat_template_kwargs.get("thinking")
-            mode_note = f"；response_mode={config.response_mode}, thinking={thinking}"
+            fallback_note = f", fallback={len(config.fallback_base_urls)}" if config.fallback_base_urls else ""
+            route_timeout = config.route_timeout_seconds or config.timeout_seconds
+            mode_note = (
+                f"；response_mode={config.response_mode}, thinking={thinking}, "
+                f"route_timeout={route_timeout}s{fallback_note}"
+            )
         return LLMProviderStatus(
             framework="openai-compatible",
             provider=config.provider,
