@@ -175,8 +175,8 @@ class APIHandler(SimpleHTTPRequestHandler):
         config.timeout_seconds = min(config.timeout_seconds, timeout_cap)
         config.max_tokens = min(config.max_tokens, 64)
         config.temperature = 0.0
-        provider_impl = build_llm_provider(config, allow_fallback=False)
         try:
+            provider_impl = build_llm_provider(config, allow_fallback=False)
             raw = provider_impl.complete('Return compact JSON only: {"ok": true, "route": "test"}')
         except Exception as exc:
             latency_ms = int((time.perf_counter() - started) * 1000)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from .models import AgentState, MoralType
+from .models import AgentState, MoralType, Role
 from .utils import gini, mean, stdev
 
 
@@ -68,3 +68,48 @@ def aggregate_group_metrics(group_records: list[dict[str, Any]]) -> dict[str, fl
         "groups_per_tick": mean(len(records) for records in by_tick.values()),
     }
 
+
+def summarize_trade_metrics(
+    *,
+    agents: list[AgentState],
+    trade_records: list[dict[str, Any]],
+) -> dict[str, float]:
+    prices = [float(record.get("clearing_price", 0.0)) for record in trade_records]
+    food_volume = sum(float(record.get("food_volume", 0.0)) for record in trade_records)
+    shell_volume = sum(float(record.get("shell_volume", 0.0)) for record in trade_records)
+    participating = sum(1 for agent in agents if agent.trade_count > 0)
+    return {
+        "avg_shell_balance": mean(agent.shell_balance for agent in agents),
+        "shell_gini_index": gini([agent.shell_balance for agent in agents]),
+        "total_trade_volume_food": food_volume,
+        "total_trade_volume_shells": shell_volume,
+        "avg_market_clearing_price": mean(prices),
+        "trade_participation_rate": participating / max(1, len(agents)),
+        "food_self_sufficiency_rate": sum(
+            1 for agent in agents if agent.food_bought <= 1e-9
+        ) / max(1, len(agents)),
+        "trade_rounds": float(len(trade_records)),
+    }
+
+
+def summarize_role_metrics(agents: list[AgentState]) -> dict[str, dict[str, float | str]]:
+    result: dict[str, dict[str, float | str]] = {}
+    for role in Role:
+        members = [agent for agent in agents if agent.role is role]
+        result[role.value] = {
+            "label": role.label,
+            "population": float(len(members)),
+            "avg_shell_balance": mean(agent.shell_balance for agent in members),
+            "avg_food_allocated": mean(
+                value for agent in members for value in agent.allocated_history
+            ),
+            "avg_wellbeing": mean(
+                value for agent in members for value in agent.wellbeing_history
+            ),
+            "avg_hunting_contribution": mean(
+                agent.hunting_contribution for agent in members
+            ),
+            "avg_food_bought": mean(agent.food_bought for agent in members),
+            "avg_food_sold": mean(agent.food_sold for agent in members),
+        }
+    return result

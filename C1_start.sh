@@ -4,8 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-if [[ -z "${PYTHON_BIN:-}" && -x "$ROOT_DIR/.venv/bin/python" ]]; then
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+  PYTHON_BIN="$PYTHON_BIN"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python)"
 else
   PYTHON_BIN="${PYTHON_BIN:-python3}"
 fi
@@ -53,6 +57,25 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
     except OSError:
         sys.exit(1)
 PY
+}
+
+is_project_pid() {
+  local pid="${1:-}"
+  local cmd
+  cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$cmd" == *"$ROOT_DIR"* || "$cmd" == *"morality_happiness.server"* ]]
+}
+
+server_pid_on_port() {
+  local port="$1"
+  command -v lsof >/dev/null 2>&1 || return 1
+  while IFS= read -r pid; do
+    if [[ "$pid" =~ ^[0-9]+$ ]] && is_project_pid "$pid"; then
+      echo "$pid"
+      return 0
+    fi
+  done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  return 1
 }
 
 if [[ -f "$PID_FILE" ]]; then
@@ -114,18 +137,24 @@ if [[ "${FOREGROUND:-0}" == "1" ]]; then
     --port "$SELECTED_PORT"
 fi
 
-nohup "$PYTHON_BIN" -m morality_happiness.server \
-  --host "$HOST" \
-  --port "$SELECTED_PORT" \
-  >"$LOG_FILE" 2>&1 &
-
-server_pid="$!"
-echo "$server_pid" > "$PID_FILE"
+SCREEN_NAME="morality_happiness_${SELECTED_PORT}"
+if command -v screen >/dev/null 2>&1; then
+  screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$SCREEN_NAME" bash -lc 'cd "$1" && exec "$2" -m morality_happiness.server --host "$3" --port "$4" > "$5" 2>&1' _ "$ROOT_DIR" "$PYTHON_BIN" "$HOST" "$SELECTED_PORT" "$LOG_FILE"
+  server_pid=""
+else
+  nohup "$PYTHON_BIN" -m morality_happiness.server \
+    --host "$HOST" \
+    --port "$SELECTED_PORT" \
+    >"$LOG_FILE" 2>&1 &
+  server_pid="$!"
+  echo "$server_pid" > "$PID_FILE"
+fi
 echo "$SELECTED_PORT" > "$PORT_FILE"
 
 sleep 1
 
-if ! kill -0 "$server_pid" 2>/dev/null; then
+if [[ -n "$server_pid" ]] && ! kill -0 "$server_pid" 2>/dev/null; then
   echo "Server failed to start. Recent log:" >&2
   tail -40 "$LOG_FILE" >&2 || true
   rm -f "$PID_FILE" "$PORT_FILE"
@@ -134,7 +163,7 @@ fi
 
 ready=0
 for _ in {1..24}; do
-  if ! kill -0 "$server_pid" 2>/dev/null; then
+  if [[ -n "$server_pid" ]] && ! kill -0 "$server_pid" 2>/dev/null; then
     break
   fi
   if "$PYTHON_BIN" - "http://$display_host:$SELECTED_PORT/api/defaults" <<'PY' >/dev/null 2>&1
@@ -161,8 +190,20 @@ if [[ "$ready" != "1" ]]; then
   exit 1
 fi
 
+actual_pid="$(server_pid_on_port "$SELECTED_PORT" || true)"
+if [[ -z "$actual_pid" ]]; then
+  actual_pid="$server_pid"
+fi
+if [[ -z "$actual_pid" ]]; then
+  echo "Server became ready, but the project PID could not be detected." >&2
+  tail -40 "$LOG_FILE" >&2 || true
+  rm -f "$PID_FILE" "$PORT_FILE"
+  exit 1
+fi
+echo "$actual_pid" > "$PID_FILE"
+
 echo "Morality Happiness server started."
-echo "PID: $server_pid"
+echo "PID: $actual_pid"
 echo "URL: http://$display_host:$SELECTED_PORT/"
 echo "Log: $LOG_FILE"
 echo "Stop: kill \$(cat \"$PID_FILE\")"

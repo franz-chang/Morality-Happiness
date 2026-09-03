@@ -114,8 +114,9 @@ SCENARIOS: dict[str, Scenario] = {
 
 @dataclass
 class SimulationParameters:
-    population_size: int = 24
-    ticks: int = 10
+    population_size: int = 120
+    ticks: int = 56
+    replications: int = 1
     seed: int = 42
     need_base: float = 1.5
     food_scale: float = 1.6
@@ -140,8 +141,32 @@ class SimulationParameters:
     regroup_interval: int = 20
     individual_transfer_strength: float = 0.18
     group_need_memory_weight: float = 0.30
+    relationship_memory_weight: float = 0.15
     moral_consistency_weight: float = 0.20
     autonomy_weight: float = 0.10
+    enable_participation_choice: bool = True
+    moral_adaptation_rate: float = 0.01
+    trade_enabled: bool = True
+    rank_enabled: bool = True
+    rank_split_enabled: bool = True
+    promotion_enabled: bool = True
+    initial_shells: float = 8.0
+    shell_base_price: float = 1.0
+    shell_min_price: float = 0.25
+    shell_max_price: float = 4.0
+    trade_safety_buffer: float = 1.0
+    max_trade_rounds: int = 1
+    chief_share_weight: float = 4.0
+    chieftain_share_weight: float = 2.0
+    hunter_share_weight: float = 1.0
+    chief_leadership_share: float = 0.10
+    chieftain_slots: int = 7
+    hunters_per_chieftain: int = 16
+    promotion_period: int = 28
+    promotion_shell_weight: float = 0.80
+    promotion_hunting_weight: float = 0.20
+    strict_redistribution: bool = True
+    min_tenure_periods: int = 0
     llm_provider: str = "rule"
     llm_sample_rate: float = 0.0
 
@@ -162,6 +187,7 @@ class SimulationParameters:
     def normalized(self) -> "SimulationParameters":
         self.population_size = max(4, int(self.population_size))
         self.ticks = max(1, int(self.ticks))
+        self.replications = max(1, min(100, int(self.replications)))
         self.seed = int(self.seed)
         self.need_base = max(0.1, float(self.need_base))
         self.food_scale = max(0.0, float(self.food_scale))
@@ -190,13 +216,57 @@ class SimulationParameters:
             0.0, min(0.8, float(self.individual_transfer_strength))
         )
         self.group_need_memory_weight = max(0.0, min(1.0, float(self.group_need_memory_weight)))
+        self.relationship_memory_weight = max(0.0, min(1.0, float(self.relationship_memory_weight)))
         self.moral_consistency_weight = max(
             0.0, min(0.5, float(self.moral_consistency_weight))
         )
         self.autonomy_weight = max(0.0, min(0.5, float(self.autonomy_weight)))
+        self.enable_participation_choice = self._coerce_bool(self.enable_participation_choice)
+        self.moral_adaptation_rate = max(0.0, min(0.2, float(self.moral_adaptation_rate)))
+        self.trade_enabled = self._coerce_bool(self.trade_enabled)
+        self.rank_enabled = self._coerce_bool(self.rank_enabled)
+        self.rank_split_enabled = self._coerce_bool(self.rank_split_enabled)
+        self.promotion_enabled = self._coerce_bool(self.promotion_enabled)
+        self.initial_shells = max(0.0, float(self.initial_shells))
+        self.shell_base_price = max(0.01, float(self.shell_base_price))
+        self.shell_min_price = max(0.01, float(self.shell_min_price))
+        self.shell_max_price = max(self.shell_min_price, float(self.shell_max_price))
+        self.trade_safety_buffer = max(0.0, min(30.0, float(self.trade_safety_buffer)))
+        self.max_trade_rounds = max(1, min(10, int(self.max_trade_rounds)))
+        self.chief_share_weight = max(0.0, float(self.chief_share_weight))
+        self.chieftain_share_weight = max(0.0, float(self.chieftain_share_weight))
+        self.hunter_share_weight = max(0.0, float(self.hunter_share_weight))
+        self.chief_leadership_share = max(0.0, min(0.5, float(self.chief_leadership_share)))
+        self.hunters_per_chieftain = max(1, int(self.hunters_per_chieftain))
+        max_chieftains = max(1, self.population_size - 2)
+        requested_chieftains = max(1, min(max_chieftains, int(self.chieftain_slots)))
+        required_chieftains = max(
+            1,
+            (self.population_size - 1 + self.hunters_per_chieftain)
+            // (self.hunters_per_chieftain + 1),
+        )
+        self.chieftain_slots = min(max_chieftains, max(requested_chieftains, required_chieftains))
+        self.promotion_period = max(1, int(self.promotion_period))
+        self.promotion_shell_weight = max(0.0, min(1.0, float(self.promotion_shell_weight)))
+        self.promotion_hunting_weight = max(0.0, min(1.0, float(self.promotion_hunting_weight)))
+        promotion_total = self.promotion_shell_weight + self.promotion_hunting_weight
+        if promotion_total <= 1e-12:
+            self.promotion_shell_weight = 1.0
+            self.promotion_hunting_weight = 0.0
+        else:
+            self.promotion_shell_weight /= promotion_total
+            self.promotion_hunting_weight /= promotion_total
+        self.strict_redistribution = self._coerce_bool(self.strict_redistribution)
+        self.min_tenure_periods = max(0, int(self.min_tenure_periods))
         self.llm_provider = normalize_provider(str(self.llm_provider))
         self.llm_sample_rate = max(0.0, min(1.0, float(self.llm_sample_rate)))
         return self
+
+    @staticmethod
+    def _coerce_bool(value: object) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", "否", "关闭"}
+        return bool(value)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

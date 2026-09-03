@@ -17,11 +17,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ticks", type=int, default=None)
     parser.add_argument("--population", type=int, default=None)
+    parser.add_argument("--replications", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--food-scale", type=float, default=None)
     parser.add_argument("--lambda-c", type=float, default=None)
     parser.add_argument("--lambda-g", type=float, default=None)
     parser.add_argument("--env-volatility", type=float, default=None)
+    parser.add_argument("--relationship-memory", type=float, default=None)
+    parser.add_argument("--moral-adaptation-rate", type=float, default=None)
+    parser.add_argument("--promotion-period", type=int, default=None)
+    parser.add_argument("--chieftain-slots", type=int, default=None)
+    parser.add_argument("--hunters-per-chieftain", type=int, default=None)
+    parser.add_argument("--disable-trade", action="store_true")
+    parser.add_argument("--disable-ranks", action="store_true")
+    parser.add_argument("--disable-rank-split", action="store_true")
+    parser.add_argument(
+        "--disable-participation-choice",
+        action="store_true",
+        help="Disable per-agent participation decisions and force participation to 1.0.",
+    )
     parser.add_argument("--out", type=Path, default=None)
     return parser
 
@@ -37,6 +51,8 @@ def main(argv: list[str] | None = None) -> None:
         overrides["ticks"] = args.ticks
     if args.population is not None:
         overrides["population_size"] = args.population
+    if args.replications is not None:
+        overrides["replications"] = args.replications
     if args.seed is not None:
         overrides["seed"] = args.seed
     if args.food_scale is not None:
@@ -47,6 +63,25 @@ def main(argv: list[str] | None = None) -> None:
         overrides["lambda_g"] = args.lambda_g
     if args.env_volatility is not None:
         overrides["environment_volatility"] = args.env_volatility
+    if args.relationship_memory is not None:
+        overrides["relationship_memory_weight"] = args.relationship_memory
+    if args.moral_adaptation_rate is not None:
+        overrides["moral_adaptation_rate"] = args.moral_adaptation_rate
+    if args.promotion_period is not None:
+        overrides["promotion_period"] = args.promotion_period
+    if args.chieftain_slots is not None:
+        overrides["chieftain_slots"] = args.chieftain_slots
+    if args.hunters_per_chieftain is not None:
+        overrides["hunters_per_chieftain"] = args.hunters_per_chieftain
+    if args.disable_trade:
+        overrides["trade_enabled"] = False
+    if args.disable_ranks:
+        overrides["rank_enabled"] = False
+        overrides["promotion_enabled"] = False
+    if args.disable_rank_split:
+        overrides["rank_split_enabled"] = False
+    if args.disable_participation_choice:
+        overrides["enable_participation_choice"] = False
     params = SimulationParameters.from_dict(overrides)
     result = run_batch(scenario_ids, params)
     print(_summary_table(result))

@@ -336,7 +336,7 @@ class DirectJSONProvider:
         return timeout
 
     def complete(self, prompt: str) -> str:
-        min_tokens = 80 if self.config.provider == "local-deepseek" else 128
+        min_tokens = 64 if self.config.provider == "local-deepseek" else 128
         request_kwargs: dict[str, Any] = {
             "model": self.config.model,
             "messages": [

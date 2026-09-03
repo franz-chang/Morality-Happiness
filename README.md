@@ -1,6 +1,6 @@
 # Morality Happiness Multi-Agent Simulation
 
-这个工程实现了三份设计文档中的“微缩狩猎部落”Multi-Agent 仿真：六种资源/制度情境、四类道德类型、狩猎产出、分配、极度疲劳救济、幸福感倒 U 型评估，以及面向前端的参数化运行接口。
+这个工程实现了“微缩狩猎部落”Multi-Agent 仿真：六种资源/制度情境、四类道德类型、狩猎产出、分配、极度疲劳救济、幸福感倒 U 型评估，以及扩展后的自由交易和三级身份制度。
 
 ## 结构
 
@@ -23,8 +23,18 @@
 ```yaml
 simulation:
   population_size: 120
-  ticks: 200
+  ticks: 56
   food_scale: 1.6
+  trade_enabled: true
+  rank_enabled: true
+  rank_split_enabled: true
+  promotion_enabled: true
+  initial_shells: 8.0
+  chieftain_slots: 7
+  hunters_per_chieftain: 16
+  promotion_period: 28
+  promotion_shell_weight: 0.80
+  promotion_hunting_weight: 0.20
 
 llm:
   default_provider: "rule"
@@ -165,6 +175,8 @@ qwen-bailian:
 - `system_logs`：模型 provider 状态、每轮总产出/平均幸福/最低保障率摘要。
 - `agent_logs`：每个 Agent 每一轮的行动、努力值、分配肉量、储备、疲劳、状态、幸福感和结果。
 
+扩展结果还包含 `trade_metrics`、`trade_records`、`role_metrics`、`promotion_events` 和 `hierarchy`。交易发生在狩猎分成之后、原有食物结算之前；身份在评选周期边界重新生效。
+
 前端“系统运行日志”栏会按当前情境展示这些日志，下载 JSON 时也会保留完整日志。
 
 ## 已实现的设计点
@@ -177,3 +189,8 @@ qwen-bailian:
 - 小/中/大型猎物刷新与 `P(success)=C_team/(C_team+C_p)` 捕猎判定。
 - `Extreme_Fatigue` 人道救济，不死亡。
 - 个体/道德分组、群体、社会层面的指标汇总。
+- 首领/酋长/猎人三级身份树，默认 1 + 7 + 7×16 = 120 人。
+- 群体狩猎身份分成权重：首领 4、酋长 2、猎人 1；各自行动场景不强行制造群体分成。
+- 食物—贝壳自由交易、市场清算价格、交易参与率和贝壳财富基尼系数。
+- 默认每 28 Tick 评选身份，贝壳数量占 80%，周期狩猎贡献占 20%。
+- 交易、身份、身份分成和周期评选均可关闭，用于原始系统基线和消融实验。

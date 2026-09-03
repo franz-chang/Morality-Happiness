@@ -120,6 +120,20 @@ class Status(str, Enum):
     EXTREME_FATIGUE = "Extreme_Fatigue"
 
 
+class Role(str, Enum):
+    CHIEF = "chief"
+    CHIEFTAIN = "chieftain"
+    HUNTER = "hunter"
+
+    @property
+    def label(self) -> str:
+        return {
+            Role.CHIEF: "首领",
+            Role.CHIEFTAIN: "酋长",
+            Role.HUNTER: "猎人",
+        }[self]
+
+
 class ActionMode(str, Enum):
     ORGANIZED = "organized"
     GROUP = "group"
@@ -170,9 +184,20 @@ class AgentState:
     food_reserve: float = 0.0
     fatigue: float = 0.0
     status: Status = Status.NORMAL
+    role: Role = Role.HUNTER
+    superior_id: int | None = None
+    shell_balance: float = 0.0
+    shell_earned_from_trade: float = 0.0
+    shell_spent_on_food: float = 0.0
+    food_bought: float = 0.0
+    food_sold: float = 0.0
+    trade_count: int = 0
     group_id: int | None = None
     previous_group_id: int | None = None
+    group_affinity: dict[int, float] = field(default_factory=dict)
     cumulative_food: float = 0.0
+    hunting_contribution: float = 0.0
+    period_hunting_contribution: float = 0.0
     extreme_triggers: int = 0
     allocated_history: list[float] = field(default_factory=list)
     wellbeing_history: list[float] = field(default_factory=list)
@@ -210,8 +235,19 @@ class AgentState:
             "food_reserve": self.food_reserve,
             "fatigue": self.fatigue,
             "status": self.status.value,
+            "role": self.role.value,
+            "role_label": self.role.label,
+            "superior_id": self.superior_id,
+            "shell_balance": self.shell_balance,
+            "shell_earned_from_trade": self.shell_earned_from_trade,
+            "shell_spent_on_food": self.shell_spent_on_food,
+            "food_bought": self.food_bought,
+            "food_sold": self.food_sold,
+            "trade_count": self.trade_count,
             "group_id": self.group_id,
+            "group_affinity": dict(self.group_affinity),
             "cumulative_food": self.cumulative_food,
+            "hunting_contribution": self.hunting_contribution,
             "extreme_triggers": self.extreme_triggers,
         }
 
@@ -223,6 +259,7 @@ class AgentDecision:
     compliance_action: float
     share_rate: float
     restraint_rate: float
+    participation_action: float = 1.0
     decision_source: str = "rule"
     decision_reason: str = ""
 
@@ -239,3 +276,6 @@ class WellbeingScores:
     autonomy: float
     social_belonging: float
     stress: float
+    eval_reason: str = ""
+    peer_reason: str = ""
+    self_reason: str = ""

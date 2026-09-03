@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
-type Parameters = Record<string, number | string>;
+type Parameters = Record<string, number | string | boolean>;
 
 type Scenario = {
   id: string;
@@ -48,6 +48,14 @@ type ScenarioResult = {
   system_logs: LogEntry[];
   agent_logs: LogEntry[];
   group_records: Array<Record<string, number | string>>;
+  trade_metrics?: MetricMap;
+  role_metrics?: Record<string, MetricMap>;
+  hierarchy?: {
+    chief_id?: number;
+    chieftain_ids?: number[];
+    hunter_assignments?: Record<string, number[]>;
+  };
+  promotion_events?: Array<Record<string, number | string>>;
 };
 
 type BatchResult = {
@@ -124,8 +132,9 @@ type StreamEvent = {
 };
 
 const defaultParams: Parameters = {
-  population_size: 24,
-  ticks: 10,
+  population_size: 120,
+  ticks: 56,
+  replications: 1,
   seed: 42,
   food_scale: 1.6,
   alpha: 1.15,
@@ -135,8 +144,27 @@ const defaultParams: Parameters = {
   environment_volatility: 0.1,
   organized_equal_weight: 0.8,
   individual_transfer_strength: 0.18,
+  relationship_memory_weight: 0.15,
   moral_consistency_weight: 0.2,
   autonomy_weight: 0.1,
+  enable_participation_choice: true,
+  moral_adaptation_rate: 0.01,
+  trade_enabled: true,
+  rank_enabled: true,
+  rank_split_enabled: true,
+  promotion_enabled: true,
+  initial_shells: 8,
+  shell_base_price: 1,
+  trade_safety_buffer: 1,
+  chief_share_weight: 4,
+  chieftain_share_weight: 2,
+  hunter_share_weight: 1,
+  chief_leadership_share: 0.1,
+  chieftain_slots: 7,
+  hunters_per_chieftain: 16,
+  promotion_period: 28,
+  promotion_shell_weight: 0.8,
+  promotion_hunting_weight: 0.2,
   llm_provider: "rule",
   llm_sample_rate: 0,
 };
@@ -174,7 +202,8 @@ const copy = {
 	    run: "运行",
 	    reset: "重置",
 	    stop: "停止",
-	    downloadJson: "下载 JSON",
+    downloadJson: "导出实验数据",
+    exportButton: "导出",
 	    switchLanguage: "切换语言",
 	    analysisButton: "实验结果分析",
 	    analysisTitle: "实验结果分析",
@@ -188,6 +217,54 @@ const copy = {
     envVolatility: "环境波动",
     moralWeight: "道德一致权重",
     autonomyWeight: "自主权重",
+    relationMemory: "关系记忆权重",
+    moralAdaptation: "道德适应率",
+    economy: "交易与身份制度",
+    tradeEnabled: "开放自由交易",
+    rankEnabled: "启用三级身份",
+    rankSplitEnabled: "身份差额分成",
+    promotionEnabled: "周期身份评选",
+    initialShells: "初始贝壳/人",
+    shellPrice: "基础食物价格",
+    tradeSafety: "交易储备倍数",
+    chiefWeight: "首领分成权重",
+    chieftainWeight: "酋长分成权重",
+    hunterWeight: "猎人分成权重",
+    chiefLeadershipShare: "首领领导份额",
+    chieftainSlots: "酋长名额",
+    huntersPerChieftain: "酋长辖下猎人",
+    promotionPeriod: "身份评选周期",
+    shellPromotionWeight: "贝壳评选权重",
+    huntingPromotionWeight: "狩猎评选权重",
+    economySummary: "交易与身份结果",
+    shellBalance: "平均贝壳",
+    shellGini: "贝壳基尼",
+    tradeVolume: "交易食物量",
+    participationRate: "交易参与率",
+    promotions: "身份变动",
+    chief: "首领",
+    chieftain: "酋长",
+    hunter: "猎人",
+    populationCount: "人数",
+    roleFood: "平均分得肉量",
+    roleWellbeing: "平均幸福",
+    roleShells: "平均贝壳",
+    economyComparison: "财富与交易对比",
+    roleComparison: "三级身份分层",
+    roleMobility: "身份流动与评选",
+    marketPrice: "市场价格",
+    currentChief: "当前首领",
+    quota: "辖额",
+    eventTick: "轮次",
+    eventAgent: "Agent",
+    eventChange: "身份变化",
+    eventShells: "贝壳",
+    noPromotion: "本次实验暂无身份变动",
+    tradeProfile: "交易结构画像",
+    shellEquality: "贝壳均衡",
+    selfSufficiency: "食物自给",
+    tradeRounds: "交易轮次",
+    huntingContribution: "狩猎贡献",
     bestWellbeing: "最高幸福",
     bestFood: "最高肉量",
     fairest: "最低不平等",
@@ -231,7 +308,8 @@ const copy = {
 	    run: "Run",
 	    reset: "Reset",
 	    stop: "Stop",
-	    downloadJson: "Download JSON",
+    downloadJson: "Export experiment data",
+    exportButton: "Export",
 	    switchLanguage: "Switch language",
 	    analysisButton: "Analysis",
 	    analysisTitle: "Experiment Analysis",
@@ -245,6 +323,54 @@ const copy = {
     envVolatility: "Environment volatility",
     moralWeight: "Moral consistency",
     autonomyWeight: "Autonomy weight",
+    relationMemory: "Relationship memory",
+    moralAdaptation: "Moral adaptation",
+    economy: "Trade & hierarchy",
+    tradeEnabled: "Enable free trade",
+    rankEnabled: "Enable three-tier roles",
+    rankSplitEnabled: "Role-based shares",
+    promotionEnabled: "Periodic promotion",
+    initialShells: "Initial shells / agent",
+    shellPrice: "Base food price",
+    tradeSafety: "Trade reserve buffer",
+    chiefWeight: "Chief share weight",
+    chieftainWeight: "Chieftain share weight",
+    hunterWeight: "Hunter share weight",
+    chiefLeadershipShare: "Chief leadership share",
+    chieftainSlots: "Chieftain slots",
+    huntersPerChieftain: "Hunters per chieftain",
+    promotionPeriod: "Promotion period",
+    shellPromotionWeight: "Shell ranking weight",
+    huntingPromotionWeight: "Hunting ranking weight",
+    economySummary: "Trade & hierarchy result",
+    shellBalance: "Avg shells",
+    shellGini: "Shell Gini",
+    tradeVolume: "Food traded",
+    participationRate: "Trade participation",
+    promotions: "Role changes",
+    chief: "Chief",
+    chieftain: "Chieftain",
+    hunter: "Hunter",
+    populationCount: "Population",
+    roleFood: "Avg allocated food",
+    roleWellbeing: "Avg wellbeing",
+    roleShells: "Avg shells",
+    economyComparison: "Wealth & trade comparison",
+    roleComparison: "Three-tier role breakdown",
+    roleMobility: "Role mobility & promotion",
+    marketPrice: "Market price",
+    currentChief: "Current chief",
+    quota: "Quota",
+    eventTick: "Tick",
+    eventAgent: "Agent",
+    eventChange: "Role change",
+    eventShells: "Shells",
+    noPromotion: "No role changes in this experiment",
+    tradeProfile: "Trade profile",
+    shellEquality: "Shell equality",
+    selfSufficiency: "Food self-sufficiency",
+    tradeRounds: "Trade rounds",
+    huntingContribution: "Hunting contribution",
     bestWellbeing: "Best wellbeing",
     bestFood: "Most food",
     fairest: "Lowest inequality",
@@ -314,9 +440,10 @@ const statusLabelEn: Record<string, string> = {
   Extreme_Fatigue: "Extreme fatigue",
 };
 
-function numberValue(value: number | string | undefined): number {
+function numberValue(value: number | string | boolean | undefined): number {
   if (typeof value === "number") return value;
   if (typeof value === "string") return Number(value) || 0;
+  if (typeof value === "boolean") return value ? 1 : 0;
   return 0;
 }
 
@@ -415,6 +542,8 @@ function App() {
       [t.bestFood, `${bestFood.scenario_id} ${numberValue(bestFood.avg_food_allocated).toFixed(2)}`],
       [t.fairest, `${fairest.scenario_id} ${numberValue(fairest.social_gini_index).toFixed(3)}`],
       [t.minimumSurvival, `${numberValue(result.comparison[0]?.minimum_survival_rate).toFixed(2)}-${Math.max(...result.comparison.map((row) => numberValue(row.minimum_survival_rate))).toFixed(2)}`],
+      [t.shellBalance, numberValue(result.comparison[0]?.avg_shell_balance).toFixed(2)],
+      [t.tradeVolume, numberValue(result.comparison[0]?.total_trade_volume_food).toFixed(1)],
     ];
   }, [result, t]);
 
@@ -422,7 +551,7 @@ function App() {
     setParams((current) => ({ ...current, [key]: value }));
   }
 
-  function updateParamValue(key: string, value: number | string) {
+  function updateParamValue(key: string, value: number | string | boolean) {
     setParams((current) => ({ ...current, [key]: value }));
   }
 
@@ -629,7 +758,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "morality_happiness_result.json";
+    anchor.download = "morality_happiness_experiment_data.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -705,6 +834,27 @@ function App() {
                 <h2>{t.comparison}</h2>
               </div>
               <ComparisonBars result={result} language={language} />
+            </section>
+
+            <section className="surface analysis-wide">
+              <div className="section-heading">
+                <h2>{t.economyComparison}</h2>
+              </div>
+              <EconomyComparison result={result} activeResult={activeResult} language={language} />
+            </section>
+
+            <section className="surface">
+              <div className="section-heading">
+                <h2>{t.roleComparison}</h2>
+              </div>
+              <RoleComparison result={activeResult} language={language} />
+            </section>
+
+            <section className="surface">
+              <div className="section-heading">
+                <h2>{t.roleMobility}</h2>
+              </div>
+              <PromotionEvents result={activeResult} language={language} />
             </section>
 
             <section className="surface">
@@ -784,8 +934,9 @@ function App() {
             {loading ? <RefreshCw className="spin" size={18} /> : <Play size={18} />}
             <span>{t.run}</span>
           </button>
-          <button className="icon-button ghost" onClick={downloadJson} disabled={!result} title={t.downloadJson}>
+          <button className="icon-button ghost text-button export-data-button" onClick={downloadJson} disabled={!result} title={t.downloadJson}>
             <Download size={18} />
+            <span>{t.exportButton}</span>
           </button>
         </div>
       </header>
@@ -834,6 +985,25 @@ function App() {
           <ParamControl label={t.envVolatility} value={numberValue(params.environment_volatility)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("environment_volatility", value)} />
           <ParamControl label={t.moralWeight} value={numberValue(params.moral_consistency_weight)} min={0.05} max={0.45} step={0.01} onChange={(value) => updateParam("moral_consistency_weight", value)} />
           <ParamControl label={t.autonomyWeight} value={numberValue(params.autonomy_weight)} min={0.05} max={0.35} step={0.01} onChange={(value) => updateParam("autonomy_weight", value)} />
+          <ParamControl label={t.relationMemory} value={numberValue(params.relationship_memory_weight)} min={0} max={1} step={0.01} onChange={(value) => updateParam("relationship_memory_weight", value)} />
+          <ParamControl label={t.moralAdaptation} value={numberValue(params.moral_adaptation_rate)} min={0} max={0.2} step={0.005} onChange={(value) => updateParam("moral_adaptation_rate", value)} />
+          <div className="scenario-section-title">{t.economy}</div>
+          <ToggleControl label={t.tradeEnabled} value={Boolean(params.trade_enabled)} onChange={(value) => updateParamValue("trade_enabled", value)} />
+          <ToggleControl label={t.rankEnabled} value={Boolean(params.rank_enabled)} onChange={(value) => updateParamValue("rank_enabled", value)} />
+          <ToggleControl label={t.rankSplitEnabled} value={Boolean(params.rank_split_enabled)} onChange={(value) => updateParamValue("rank_split_enabled", value)} />
+          <ToggleControl label={t.promotionEnabled} value={Boolean(params.promotion_enabled)} onChange={(value) => updateParamValue("promotion_enabled", value)} />
+          <ParamControl label={t.initialShells} value={numberValue(params.initial_shells)} min={0} max={100} step={1} onChange={(value) => updateParam("initial_shells", value)} />
+          <ParamControl label={t.shellPrice} value={numberValue(params.shell_base_price)} min={0.1} max={10} step={0.1} onChange={(value) => updateParam("shell_base_price", value)} />
+          <ParamControl label={t.tradeSafety} value={numberValue(params.trade_safety_buffer)} min={0.5} max={4} step={0.1} onChange={(value) => updateParam("trade_safety_buffer", value)} />
+          <ParamControl label={t.chiefWeight} value={numberValue(params.chief_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("chief_share_weight", value)} />
+          <ParamControl label={t.chieftainWeight} value={numberValue(params.chieftain_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("chieftain_share_weight", value)} />
+          <ParamControl label={t.hunterWeight} value={numberValue(params.hunter_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("hunter_share_weight", value)} />
+          <ParamControl label={t.chiefLeadershipShare} value={numberValue(params.chief_leadership_share)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("chief_leadership_share", value)} />
+          <ParamControl label={t.chieftainSlots} value={numberValue(params.chieftain_slots)} min={1} max={20} step={1} onChange={(value) => updateParam("chieftain_slots", value)} />
+          <ParamControl label={t.huntersPerChieftain} value={numberValue(params.hunters_per_chieftain)} min={1} max={40} step={1} onChange={(value) => updateParam("hunters_per_chieftain", value)} />
+          <ParamControl label={t.promotionPeriod} value={numberValue(params.promotion_period)} min={1} max={200} step={1} onChange={(value) => updateParam("promotion_period", value)} />
+          <ParamControl label={t.shellPromotionWeight} value={numberValue(params.promotion_shell_weight)} min={0} max={1} step={0.05} onChange={(value) => updateParam("promotion_shell_weight", value)} />
+          <ParamControl label={t.huntingPromotionWeight} value={numberValue(params.promotion_hunting_weight)} min={0} max={1} step={0.05} onChange={(value) => updateParam("promotion_hunting_weight", value)} />
           <div className="scenario-section-title">实验情景</div>
           <div className="scenario-grid">
             {scenarios.map((scenario) => (
@@ -863,6 +1033,8 @@ function App() {
               </div>
             )}
           </div>
+
+          <EconomySummary result={activeResult} language={language} />
 
           <section className="surface log-surface">
             <div className="section-heading with-tabs">
@@ -907,6 +1079,58 @@ function KpiValue({ value }: { value: string }) {
       <span className="kpi-scenario">{match[1]}</span>
       <span className="kpi-number">{match[2]}</span>
     </strong>
+  );
+}
+
+function ToggleControl({ label, value, onChange }: {
+  label: string;
+  value: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="toggle-control">
+      <span>{label}</span>
+      <input type="checkbox" checked={value} onChange={(event) => onChange(event.target.checked)} />
+      <span className="toggle-track" aria-hidden="true"><span /></span>
+    </label>
+  );
+}
+
+function EconomySummary({ result, language }: { result: ScenarioResult | null; language: Language }) {
+  const t = copy[language];
+  const trade = result?.trade_metrics ?? {};
+  const roles = result?.role_metrics ?? {};
+  const roleOrder = ["chief", "chieftain", "hunter"];
+  return (
+    <section className="surface economy-surface">
+      <div className="section-heading">
+        <h2>{t.economySummary}</h2>
+        {result?.hierarchy?.chief_id !== undefined && (
+          <span className="log-meta">{t.chief} A{result.hierarchy.chief_id}</span>
+        )}
+      </div>
+      <div className="economy-kpis">
+        <div><span>{t.shellBalance}</span><strong>{numberValue(trade.avg_shell_balance).toFixed(2)}</strong></div>
+        <div><span>{t.shellGini}</span><strong>{numberValue(trade.shell_gini_index).toFixed(3)}</strong></div>
+        <div><span>{t.tradeVolume}</span><strong>{numberValue(trade.total_trade_volume_food).toFixed(1)}</strong></div>
+        <div><span>{t.participationRate}</span><strong>{(numberValue(trade.trade_participation_rate) * 100).toFixed(0)}%</strong></div>
+        <div><span>{t.promotions}</span><strong>{result?.promotion_events?.length ?? 0}</strong></div>
+      </div>
+      <div className="role-grid">
+        {roleOrder.map((role) => {
+          const metric = roles[role] ?? {};
+          const roleLabel = role === "chief" ? t.chief : role === "chieftain" ? t.chieftain : t.hunter;
+          return (
+            <div className={`role-card role-${role}`} key={role}>
+              <div className="role-card-title"><strong>{roleLabel}</strong><span>{numberValue(metric.population).toFixed(0)} {t.populationCount}</span></div>
+              <span>{t.roleShells} {numberValue(metric.avg_shell_balance).toFixed(2)}</span>
+              <span>{t.roleFood} {numberValue(metric.avg_food_allocated).toFixed(2)}</span>
+              <span>{t.roleWellbeing} {numberValue(metric.avg_wellbeing).toFixed(1)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1106,6 +1330,204 @@ function decimalPlaces(value: number) {
 
 function formatParamValue(value: number, precision: number) {
   return precision === 0 ? String(Math.round(value)) : value.toFixed(precision);
+}
+
+function EconomyComparison({ result, activeResult, language }: { result: BatchResult | null; activeResult: ScenarioResult | null; language: Language }) {
+  const rows = result?.comparison ?? [];
+  const t = copy[language];
+  if (!rows.length) return <EmptyChart />;
+  const maxTrade = Math.max(1, ...rows.map((row) => numberValue(row.total_trade_volume_food)));
+  return (
+    <div className="economy-analysis-layout">
+      <div className="analysis-table-wrap">
+        <table className="analysis-table">
+          <thead>
+            <tr>
+              <th>{language === "zh" ? "情境" : "Scenario"}</th>
+              <th>{t.shellBalance}</th>
+              <th>{t.shellGini}</th>
+              <th>{t.tradeVolume}</th>
+              <th>{t.participationRate}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const tradeVolume = numberValue(row.total_trade_volume_food);
+              return (
+                <tr key={String(row.scenario_id)}>
+                  <th>{String(row.scenario_id)}</th>
+                  <td>{numberValue(row.avg_shell_balance).toFixed(2)}</td>
+                  <td>{numberValue(row.shell_gini_index).toFixed(3)}</td>
+                  <td>
+                    <div className="metric-bar-cell">
+                      <span>{tradeVolume.toFixed(1)}</span>
+                      <i style={{ width: `${Math.max(2, (tradeVolume / maxTrade) * 100)}%` }} />
+                    </div>
+                  </td>
+                  <td>{(numberValue(row.trade_participation_rate) * 100).toFixed(0)}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <TradeProfileRadar result={result} activeResult={activeResult} language={language} />
+    </div>
+  );
+}
+
+function TradeProfileRadar({ result, activeResult, language }: { result: BatchResult | null; activeResult: ScenarioResult | null; language: Language }) {
+  const t = copy[language];
+  const trade = activeResult?.trade_metrics ?? {};
+  if (!activeResult) return <div className="radar-empty">{t.waiting}</div>;
+  const rows = result?.comparison ?? [];
+  const maxTrade = Math.max(1, ...rows.map((row) => numberValue(row.total_trade_volume_food)));
+  const maxRounds = Math.max(1, ...rows.map((row) => numberValue(row.trade_rounds)));
+  const maxPrice = Math.max(1, ...rows.map((row) => numberValue(row.avg_market_clearing_price)));
+  return (
+    <div className="radar-panel">
+      <div className="radar-panel-heading">
+        <strong>{t.tradeProfile}</strong>
+        <span>{activeResult.scenario.id}</span>
+      </div>
+      <RadarChart
+        axes={[t.participationRate, t.selfSufficiency, t.tradeVolume, t.tradeRounds, t.marketPrice]}
+        series={[{
+          label: activeResult.scenario.id,
+          color: "var(--teal)",
+          values: [
+            numberValue(trade.trade_participation_rate) * 100,
+            numberValue(trade.food_self_sufficiency_rate) * 100,
+            (numberValue(trade.total_trade_volume_food) / maxTrade) * 100,
+            (numberValue(trade.trade_rounds) / maxRounds) * 100,
+            (numberValue(trade.avg_market_clearing_price) / maxPrice) * 100,
+          ],
+        }]}
+      />
+    </div>
+  );
+}
+
+function RoleComparison({ result, language }: { result: ScenarioResult | null; language: Language }) {
+  const t = copy[language];
+  const roles = result?.role_metrics ?? {};
+  const order = ["chief", "chieftain", "hunter"];
+  if (!result || !Object.keys(roles).length) return <EmptyChart />;
+  return (
+    <div className="role-analysis-layout">
+      <div className="radar-panel">
+        <div className="radar-panel-heading">
+          <strong>{t.roleComparison}</strong>
+          <span>{result.scenario.id}</span>
+        </div>
+        <RadarChart
+          axes={[t.roleShells, t.roleFood, t.roleWellbeing, t.huntingContribution]}
+          series={order.map((role) => {
+            const metric = roles[role] ?? {};
+            return {
+              label: role === "chief" ? t.chief : role === "chieftain" ? t.chieftain : t.hunter,
+              color: role === "chief" ? "var(--gold)" : role === "chieftain" ? "var(--violet)" : "var(--teal)",
+              values: [
+                numberValue(metric.avg_shell_balance),
+                numberValue(metric.avg_food_allocated),
+                numberValue(metric.avg_wellbeing),
+                numberValue(metric.avg_hunting_contribution),
+              ],
+            };
+          })}
+        />
+      </div>
+      <div className="role-analysis-list">
+        <div className="role-analysis-meta">
+          <span>{t.currentChief}: A{result.hierarchy?.chief_id ?? "-"}</span>
+          <span>{t.quota}: {result.hierarchy?.chieftain_ids?.length ?? 0} / {result.hierarchy?.hunter_assignments ? Object.values(result.hierarchy.hunter_assignments).reduce((total, ids) => total + ids.length, 0) : 0}</span>
+        </div>
+        {order.map((role) => {
+          const metric = roles[role] ?? {};
+          const label = role === "chief" ? t.chief : role === "chieftain" ? t.chieftain : t.hunter;
+          return (
+            <div className={`role-analysis-row role-${role}`} key={role}>
+              <div className="role-analysis-title"><strong>{label}</strong><span>{numberValue(metric.population).toFixed(0)} {t.populationCount}</span></div>
+              <div><span>{t.roleShells}</span><strong>{numberValue(metric.avg_shell_balance).toFixed(2)}</strong></div>
+              <div><span>{t.roleFood}</span><strong>{numberValue(metric.avg_food_allocated).toFixed(2)}</strong></div>
+              <div><span>{t.roleWellbeing}</span><strong>{numberValue(metric.avg_wellbeing).toFixed(1)}</strong></div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+type RadarSeries = { label: string; color: string; values: number[] };
+
+function RadarChart({ axes, series }: { axes: string[]; series: RadarSeries[] }) {
+  const size = 310;
+  const center = size / 2;
+  const radius = 98;
+  const angleStep = (Math.PI * 2) / axes.length;
+  const pointsAt = (ratio: number, index: number) => {
+    const angle = -Math.PI / 2 + index * angleStep;
+    return { x: center + Math.cos(angle) * radius * ratio, y: center + Math.sin(angle) * radius * ratio };
+  };
+  const axisPoints = axes.map((_, index) => pointsAt(1, index));
+  const maxima = axes.map((_, index) => Math.max(1, ...series.map((entry) => numberValue(entry.values[index]))));
+  const polygonPoints = (values: number[]) => values.map((value, index) => {
+    const point = pointsAt(Math.min(1, numberValue(value) / maxima[index]), index);
+    return `${point.x},${point.y}`;
+  }).join(" ");
+  return (
+    <div className="radar-chart-shell">
+      <svg viewBox={`0 0 ${size} ${size}`} className="radar-chart" role="img" aria-label={axes.join(", ")}>
+        {[0.25, 0.5, 0.75, 1].map((ratio) => (
+          <polygon key={ratio} points={axisPoints.map((_, index) => {
+            const point = pointsAt(ratio, index);
+            return `${point.x},${point.y}`;
+          }).join(" ")} className="radar-grid" />
+        ))}
+        {axisPoints.map((point, index) => (
+          <line key={axes[index]} x1={center} y1={center} x2={point.x} y2={point.y} className="radar-axis" />
+        ))}
+        {series.map((entry) => (
+          <g key={entry.label}>
+            <polygon points={polygonPoints(entry.values)} fill={entry.color} fillOpacity="0.16" stroke={entry.color} strokeWidth="2" className="radar-series" />
+            {entry.values.map((value, index) => {
+              const point = pointsAt(Math.min(1, numberValue(value) / maxima[index]), index);
+              return <circle key={`${entry.label}-${index}`} cx={point.x} cy={point.y} r="3" fill={entry.color} />;
+            })}
+          </g>
+        ))}
+        {axes.map((label, index) => {
+          const point = pointsAt(1.2, index);
+          const anchor = point.x < center - 5 ? "end" : point.x > center + 5 ? "start" : "middle";
+          return <text key={label} x={point.x} y={point.y} textAnchor={anchor} dominantBaseline="middle" className="radar-label">{label}</text>;
+        })}
+      </svg>
+      <div className="radar-legend">
+        {series.map((entry) => <span key={entry.label}><i style={{ background: entry.color }} />{entry.label}</span>)}
+      </div>
+    </div>
+  );
+}
+
+function PromotionEvents({ result, language }: { result: ScenarioResult | null; language: Language }) {
+  const t = copy[language];
+  const events = (result?.promotion_events ?? []).slice(-10).reverse();
+  if (!result || !events.length) {
+    return <div className="no-events">{t.noPromotion}</div>;
+  }
+  return (
+    <div className="promotion-list">
+      {events.map((event, index) => (
+        <div className="promotion-row" key={`${String(event.tick)}-${String(event.agent_id)}-${index}`}>
+          <span className="promotion-tick">T{String(event.tick)}</span>
+          <strong>A{String(event.agent_id)}</strong>
+          <span>{String(event.old_role_label ?? event.old_role)} → {String(event.new_role_label ?? event.new_role)}</span>
+          <span className="promotion-shells">{t.eventShells} {numberValue(event.shell_balance).toFixed(1)}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ComparisonBars({ result, language }: { result: BatchResult | null; language: Language }) {

@@ -6,8 +6,9 @@ server:
   port: 8000
 
 simulation:
-  population_size: 24
-  ticks: 10
+  population_size: 120
+  ticks: 56
+  replications: 1
   seed: 42
   need_base: 1.5
   food_scale: 1.6
@@ -32,8 +33,32 @@ simulation:
   regroup_interval: 20
   individual_transfer_strength: 0.18
   group_need_memory_weight: 0.3
+  relationship_memory_weight: 0.15
   moral_consistency_weight: 0.2
   autonomy_weight: 0.1
+  enable_participation_choice: true
+  moral_adaptation_rate: 0.01
+  trade_enabled: true
+  rank_enabled: true
+  rank_split_enabled: true
+  promotion_enabled: true
+  initial_shells: 8.0
+  shell_base_price: 1.0
+  shell_min_price: 0.25
+  shell_max_price: 4.0
+  trade_safety_buffer: 1.0
+  max_trade_rounds: 1
+  chief_share_weight: 4.0
+  chieftain_share_weight: 2.0
+  hunter_share_weight: 1.0
+  chief_leadership_share: 0.10
+  chieftain_slots: 7
+  hunters_per_chieftain: 16
+  promotion_period: 28
+  promotion_shell_weight: 0.80
+  promotion_hunting_weight: 0.20
+  strict_redistribution: true
+  min_tenure_periods: 0
 
 llm:
   default_provider: "rule"
@@ -69,8 +94,8 @@ llm:
       fallback_base_urls:
         - "https://uni-api-global.cstcloud.cn/v1"
       response_mode: "instruct"
-      timeout_seconds: 30
-      route_timeout_seconds: 8
+      timeout_seconds: 45
+      route_timeout_seconds: 20
       max_retries: 0
       decision_retries: 1
       max_tokens: 96

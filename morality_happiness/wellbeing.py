@@ -4,6 +4,11 @@ from .models import AgentDecision, AgentState, Scenario, WellbeingScores
 from .utils import clip
 
 
+def _reason(label: str, values: dict[str, float]) -> str:
+    strongest = max(values, key=lambda key: abs(values[key])) if values else label
+    return f"{label}:{strongest}"
+
+
 def material_wellbeing_score(food_ratio: float) -> float:
     """Piecewise inverted-U score: hungry hurts, enough peaks, surplus decays."""
     ratio = max(0.0, food_ratio)
@@ -94,33 +99,55 @@ def evaluate_wellbeing(
     social_weight = 0.12
     material_weight = max(0.25, 0.72 - moral_weight - auto_weight - fairness_weight - social_weight)
 
+    eval_terms = {
+        "material": material_weight * material,
+        "moral": moral_weight * consistency * 100.0,
+        "fairness": fairness_weight * fairness * 100.0,
+        "autonomy": auto_weight * autonomy * 100.0,
+        "social": social_weight * social * 100.0,
+        "stress": -14.0 * stress,
+    }
     eval_score = (
-        material_weight * material
-        + moral_weight * consistency * 100.0
-        + fairness_weight * fairness * 100.0
-        + auto_weight * autonomy * 100.0
-        + social_weight * social * 100.0
-        - 14.0 * stress
+        eval_terms["material"]
+        + eval_terms["moral"]
+        + eval_terms["fairness"]
+        + eval_terms["autonomy"]
+        + eval_terms["social"]
+        + eval_terms["stress"]
     )
 
     self_moral_bias = 0.10 * agent.self_orientation * autonomy * 100.0
     self_social_bias = 0.10 * agent.alt_orientation * social * 100.0
+    self_terms = {
+        "material": 0.42 * material,
+        "moral": 0.24 * consistency * 100.0,
+        "fairness": 0.12 * fairness * 100.0,
+        "autonomy": 0.12 * autonomy * 100.0 + self_moral_bias,
+        "social": self_social_bias,
+        "stress": -16.0 * stress,
+    }
     self_score = (
-        0.42 * material
-        + 0.24 * consistency * 100.0
-        + 0.12 * fairness * 100.0
-        + 0.12 * autonomy * 100.0
-        + self_moral_bias
-        + self_social_bias
-        - 16.0 * stress
+        self_terms["material"]
+        + self_terms["moral"]
+        + self_terms["fairness"]
+        + self_terms["autonomy"]
+        + self_terms["social"]
+        + self_terms["stress"]
     )
 
+    peer_terms = {
+        "material": 0.48 * material,
+        "fairness": 0.18 * fairness * 100.0,
+        "social": 0.20 * social * 100.0,
+        "moral": 0.14 * consistency * 100.0,
+        "stress": -10.0 * stress,
+    }
     peer_score = (
-        0.48 * material
-        + 0.18 * fairness * 100.0
-        + 0.20 * social * 100.0
-        + 0.14 * consistency * 100.0
-        - 10.0 * stress
+        peer_terms["material"]
+        + peer_terms["fairness"]
+        + peer_terms["social"]
+        + peer_terms["moral"]
+        + peer_terms["stress"]
     )
     eval_score = clip(eval_score, 0.0, 100.0)
     self_score = clip(self_score, 0.0, 100.0)
@@ -138,5 +165,7 @@ def evaluate_wellbeing(
         autonomy=autonomy,
         social_belonging=social,
         stress=stress,
+        eval_reason=_reason("eval", eval_terms),
+        peer_reason=_reason("peer", peer_terms),
+        self_reason=_reason("self", self_terms),
     )
-
