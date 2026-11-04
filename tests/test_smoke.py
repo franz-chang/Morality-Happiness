@@ -1,6 +1,7 @@
 import unittest
 
 from morality_happiness import SimulationParameters, run_batch
+from morality_happiness.simulation import Simulation
 
 
 class SmokeTest(unittest.TestCase):
@@ -35,7 +36,7 @@ class SmokeTest(unittest.TestCase):
         self.assertGreaterEqual(len(scenario["promotion_events"]), 0)
         self.assertAlmostEqual(
             scenario["society_metrics"]["avg_shell_balance"],
-            params.initial_shells,
+            scenario["shell_accounting"]["initial_shell_total"] / params.population_size,
             places=6,
         )
 
@@ -53,6 +54,93 @@ class SmokeTest(unittest.TestCase):
         for scenario in result["results"]:
             self.assertEqual(scenario["trade_metrics"]["total_trade_volume_food"], 0.0)
             self.assertEqual(scenario["promotion_events"], [])
+
+    def test_food_shell_ledgers_and_no_trade_price(self) -> None:
+        params = SimulationParameters(
+            population_size=24,
+            ticks=8,
+            seed=13,
+            trade_enabled=False,
+            relief_source="public",
+            public_food_reserve=12.0,
+        )
+        result = run_batch(["S1"], params)["results"][0]
+        self.assertAlmostEqual(result["food_accounting"]["balance_error"], 0.0, places=6)
+        self.assertLess(result["food_accounting"]["max_abs_tick_error"], 1e-6)
+        self.assertAlmostEqual(result["shell_accounting"]["balance_error"], 0.0, places=6)
+        self.assertIsNone(result["trade_metrics"]["avg_market_clearing_price"])
+        self.assertTrue(all(record["clearing_price"] is None for record in result["trade_records"]))
+        self.assertGreaterEqual(result["food_accounting"]["public_relief_total"], 0.0)
+
+    def test_replicated_stream_honors_replications_without_agent_log_bloat(self) -> None:
+        params = SimulationParameters(
+            population_size=16,
+            ticks=2,
+            replications=2,
+            seed=17,
+            trade_enabled=False,
+        )
+        events = []
+        result = run_batch(["S3"], params, event_callback=events.append)
+        scenario = result["results"][0]
+        self.assertEqual(result["replication_count"], 2)
+        self.assertEqual(len(scenario["replicate_summaries"]), 2)
+        self.assertFalse(scenario["experiment_protocol"]["detailed_agent_logs_retained"])
+        self.assertEqual(scenario["agent_logs"], [])
+        self.assertTrue(any(event["type"] == "complete" for event in events))
+
+    def test_config_defaults_follow_long_run_protocol(self) -> None:
+        params = SimulationParameters.from_dict({})
+        self.assertEqual(params.ticks, 560)
+        self.assertEqual(params.replications, 10)
+        self.assertEqual(params.initial_shells_distribution, "uniform")
+        self.assertEqual(params.initial_shells_min, 20.0)
+        self.assertEqual(params.initial_shells_max, 40.0)
+        self.assertEqual(params.burn_in_ticks, 28)
+        self.assertAlmostEqual(params.chief_leadership_share, 4.0 / 130.0)
+        self.assertEqual(params.trade_safety_buffer, 1.5)
+
+    def test_minimum_tenure_locks_recent_role_changes(self) -> None:
+        params = SimulationParameters(
+            population_size=120,
+            ticks=56,
+            replications=1,
+            seed=19,
+            min_tenure_periods=1,
+        )
+        result = run_batch(["S2"], params)["results"][0]
+        first_period_moves = {
+            event["agent_id"] for event in result["promotion_events"] if event["tick"] == 28
+        }
+        second_period_moves = {
+            event["agent_id"] for event in result["promotion_events"] if event["tick"] == 56
+        }
+        self.assertTrue(first_period_moves.isdisjoint(second_period_moves))
+        self.assertEqual(result["role_metrics"]["chief"]["population"], 1.0)
+        self.assertEqual(result["role_metrics"]["chieftain"]["population"], 7.0)
+        self.assertEqual(result["role_metrics"]["hunter"]["population"], 112.0)
+
+    def test_revised_market_burn_in_and_zlog_protocol(self) -> None:
+        params = SimulationParameters(population_size=48, ticks=56, replications=1, seed=29)
+        scenario = run_batch(["S2"], params)["results"][0]
+        records = scenario["trade_records"]
+        prices = [record["clearing_price"] for record in records if record["clearing_price"] is not None]
+        self.assertTrue(all(params.shell_min_price <= price <= params.shell_max_price for price in prices))
+        self.assertEqual(scenario["experiment_protocol"]["burn_in_ticks"], 28)
+        self.assertEqual(scenario["promotion_reviews"][0]["tick"], 28)
+        self.assertEqual(scenario["promotion_reviews"][0]["score_mode"], "zlog")
+        initial_total = scenario["shell_accounting"]["initial_shell_total"]
+        self.assertGreater(initial_total, params.initial_shells_min * params.population_size)
+        self.assertLess(initial_total, params.initial_shells_max * params.population_size)
+        self.assertAlmostEqual(scenario["shell_accounting"]["balance_error"], 0.0, places=6)
+
+    def test_idiosyncratic_allocation_preserves_team_pool(self) -> None:
+        simulation = Simulation("S1", SimulationParameters(population_size=8, idio_sigma=0.3, seed=31))
+        members = simulation.agents
+        baseline = {agent.id: 1.0 for agent in members}
+        realized = simulation._apply_idiosyncratic_allocation_noise(baseline, members)
+        self.assertAlmostEqual(sum(realized.values()), sum(baseline.values()), places=9)
+        self.assertGreater(len({round(value, 8) for value in realized.values()}), 1)
 
 
 if __name__ == "__main__":

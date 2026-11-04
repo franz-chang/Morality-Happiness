@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>道德幸福狩猎社会 Agent 系统 UML 总图</title>
+<style>
+@page { size: 1189mm 841mm; margin: 0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 1189mm; height: 841mm; }
+body { background: #f3f5f2; color: #182934; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.topbar { height: 4mm; background: linear-gradient(90deg,#30689f 0 35%,#238176 35% 60%,#c05258 60% 80%,#b8832b 80%); }
+header { height: 49mm; margin: 15mm 18mm 0; border-bottom: .55mm solid #9dacae; }
+.eyebrow { color:#31699c; font-size:3.2mm; font-weight:700; letter-spacing:.18mm; }
+h1 { font-size:12mm; margin:2mm 0 1mm; letter-spacing:.1mm; }
+header p { font-size:4.1mm; margin:0; color:#4c6069; }
+.layout { margin: 6mm 18mm 0; height: 734mm; display:grid; grid-template-columns: 292mm 537mm 312mm; gap:6mm; }
+.col { display:flex; flex-direction:column; gap:6mm; min-height:0; }
+.card { background:#fff; border:.35mm solid #b9c8c8; border-top:1.8mm solid var(--accent,#32699d); padding:6mm; overflow:hidden; }
+.card h2 { font-size:9mm; margin:0 0 4mm; color:#162a34; }
+.card h3 { font-size:7.2mm; margin:3mm 0 1.5mm; color:#1b3d4c; }
+.badge { display:inline-flex; justify-content:center; align-items:center; width:13mm; height:13mm; border-radius:50%; background:var(--accent,#32699d); color:white; font-size:5.8mm; font-weight:700; margin-right:2mm; vertical-align:middle; }
+p, li { font-size:7.5mm; line-height:1.4; margin:0 0 1.6mm; }
+ul { margin:0; padding-left:5mm; } li { padding-left:0.5mm; }
+.muted { color:#536971; } .small { font-size:6.2mm; line-height:1.38; }
+.tag { display:inline-block; padding:1.1mm 2.2mm; border-radius:1mm; background:#e1eff6; color:#245b85; font-size:6mm; margin:0 1mm 1mm 0; }
+.code { background:#f2f5f4; border-left:1mm solid var(--accent,#32699d); padding:3mm; font:6.3mm/1.36 "Menlo", "PingFang SC", monospace; white-space:pre-wrap; overflow-wrap:anywhere; color:#243b45; }
+.rule { border-top:.3mm solid #cbd6d5; margin:3mm 0; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:3mm; }
+.grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:2.5mm; }
+.mini { background:#f4f7f5; border:.3mm solid #cedbda; padding:2.5mm; font-size:6mm; line-height:1.3; }
+.mini strong { display:block; font-size:6.4mm; color:#1d4655; margin-bottom:1mm; }
+.flow { display:grid; grid-template-columns:repeat(4,1fr); gap:2.4mm; }
+.step { border:.3mm solid #bacdce; background:#f7faf9; padding:2.4mm; min-height:20mm; }
+.step strong { color:#245c81; font-size:6.5mm; display:block; }
+.step span { font-size:6.1mm; line-height:1.3; display:block; margin-top:1mm; }
+svg { display:block; width:100%; }
+svg text { font-family:"PingFang SC",sans-serif; fill:#243b45; }
+svg text.white { fill:#fff; }
+.component { height:267mm; } .classes { height:199mm; } .flowcard { flex:1; }
+.prompt { height:260mm; --accent:#238176; } .scenario { height:187mm; --accent:#c05258; } .hierarchy { flex:1; --accent:#b8832b; }
+.result { height:148mm; --accent:#32699d; } .observation { height:204mm; --accent:#7154a2; } .decision { height:126mm; --accent:#238176; } .audit { flex:1; --accent:#b8832b; }
+footer { margin:4mm 18mm; display:flex; justify-content:space-between; color:#738389; font-size:2.7mm; }
+</style>
+</head>
+<body>
+<div class="topbar"></div>
+<header>
+  <div class="eyebrow">SOURCE-GROUNDED UML WALL ATLAS / SINGLE-PAGE A0 TECHNICAL BLUEPRINT</div>
+  <h1>道德幸福狩猎社会 Agent 系统 UML 总图</h1>
+  <p>以组件与类关系为主线，索引 Agent 决策、狩猎交易、身份流动、逐轮状态、实验输出与实现边界。</p>
+</header>
+<main class="layout">
+  <div class="col">
+    <section class="card prompt">
+      <h2><span class="badge">05</span>Agent 决策 Prompt 与权限</h2>
+      <p>系统为每位 Agent 组装当前情境、个体状态和同轮已决策摘要，要求输出一个紧凑 JSON 对象。模型只提出行为参数；生产、交易、分配及状态更新由仿真执行。</p>
+      <h3>输入上下文</h3>
+      <div class="grid2"><div class="mini"><strong>情境 sc / 上下文 ctx</strong>情境、行动模式、匮乏压力、机会、集体化；轮次、群体规模、缺粮率、先前决策摘要。</div><div class="mini"><strong>个体 ag</strong>道德类型与权重、能力、需求、幸福感、储备、疲劳、身份、贝壳、状态与小组。</div></div>
+      <h3>标准 Prompt 的固定指令摘录</h3>
+      <div class="code">Return exactly one compact JSON object.
+No markdown, no prose, no extra keys.
+Template: {"participation_action":0.9,"effort":0.6,
+ "compliance_action":0.7,"share_rate":0.5,
+ "restraint_rate":0.2,"reason":"fit"}.
+First five values are numbers in [0,1].
+reason: survival | fit | fair | fatigue | reserve | belong.
+If Extreme_Fatigue: effort=0, restraint_rate&gt;=0.7.
+Data: {sc, ctx, ag}</div>
+      <h3>调用与容错</h3>
+      <ul><li>Agent 按顺序决策；标准 Prompt 最多提供先前 12 人的摘要。</li><li>中国科技云通路使用紧凑版本，先前决策摘要最多 4 人。</li><li>模型返回需解析、数值归一化；失败可重试，耗尽后使用规则兜底并记录来源。</li><li>规则模式不调用外部模型；模型是否可用与仿真是否持续运行分别记录。</li></ul>
+      <p class="small muted">来源：simulation.py / _agent_decision_prompt、_compact_agent_decision_prompt、_llm_decide</p>
+    </section>
+    <section class="card scenario">
+      <h2><span class="badge">06</span>六种实验情境与参数</h2>
+      <div class="grid3">
+        <div class="mini"><strong>S1 · 匮乏</strong>强组织总体行动</div><div class="mini"><strong>S2 · 匮乏</strong>弱组织抱团行动</div><div class="mini"><strong>S3 · 匮乏</strong>弱组织各自行动</div>
+        <div class="mini"><strong>S4 · 丰裕</strong>强组织总体行动</div><div class="mini"><strong>S5 · 丰裕</strong>弱组织抱团行动</div><div class="mini"><strong>S6 · 丰裕</strong>弱组织各自行动</div>
+      </div>
+      <h3>默认实验协议</h3><p>120 人 · 560 tick · 10 次重复 · 基础种子 42。目标供给比：匮乏 0.80，丰裕 1.025；目标是标定参考，实际供给比需由结果计算。</p>
+      <p>道德类型：自利发展、自利节制、利他发展、利他节制。三种行动模式分别走组织、抱团或个体狩猎路径。</p>
+      <p class="small muted">来源：config.py / SCENARIOS、SimulationParameters；实际参数可由配置和前端覆盖。</p>
+    </section>
+    <section class="card hierarchy">
+      <h2><span class="badge">07</span>身份、分成与周期评选</h2>
+      <div class="grid3"><div class="mini"><strong>首领 Chief</strong>全体一个</div><div class="mini"><strong>酋长 Chieftain</strong>定额席位</div><div class="mini"><strong>猎人 Hunter</strong>按容量分配至酋长</div></div>
+      <h3>默认制度</h3><p>等级权重 4 : 2 : 1；首领领导份额 10%；酋长席位 7、每席猎人容量 16。等级分成与晋升均可通过参数开关控制。</p>
+      <p>每 28 轮评选：贝壳持有量百分位 × 0.8 + 当期狩猎贡献百分位 × 0.2；平分时使用固定种子产生的排序依据，并支持最低任期。</p>
+      <p>首个评选周期被标注为 warm-up。身份变化后重新分配上下级关系；评选结果写入 promotion reviews / events。</p>
+      <p class="small muted">来源：simulation.py / _initialize_hierarchy、_evaluate_promotions；config.py</p>
+    </section>
+  </div>
+  <div class="col">
+    <section class="card component">
+      <h2><span class="badge">01</span>系统组件 UML：运行时主线与模型调用边界</h2>
+      <svg viewBox="0 0 1000 490" role="img" aria-label="系统组件与依赖关系">
+        <defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="#37515f"/></marker></defs>
+        <rect x="5" y="75" width="760" height="402" fill="#edf3f4" stroke="#86a6b8"/>
+        <text x="18" y="94" font-size="13" fill="#42667e">PYTHON SIMULATION RUNTIME · authoritative state</text>
+        <g stroke="#87a8bc" fill="#dcebf5"><rect x="10" y="5" width="170" height="48"/><rect x="220" y="5" width="210" height="48"/><rect x="470" y="5" width="220" height="48"/></g>
+        <text x="22" y="26" font-size="15" font-weight="bold">Researcher</text><text x="22" y="43" font-size="11">配置 / 运行 / 分析</text>
+        <text x="232" y="26" font-size="15" font-weight="bold">Browser Dashboard</text><text x="232" y="43" font-size="11">React · 展示 / JSON 导出</text>
+        <text x="482" y="26" font-size="15" font-weight="bold">Python HTTP Server</text><text x="482" y="43" font-size="11">REST · NDJSON streaming</text>
+        <g stroke="#87a8bc" fill="#dcebf5"><rect x="280" y="113" width="270" height="75"/><rect x="34" y="220" width="190" height="70"/><rect x="290" y="220" width="235" height="70"/><rect x="570" y="220" width="170" height="70"/></g>
+        <text x="296" y="138" font-size="16" font-weight="bold">Simulation / run_batch</text><text x="296" y="158" font-size="12">run · tick · decisions · result</text><text x="296" y="176" font-size="11">场景 × 重复 / 种子 / 事件流</text>
+        <text x="48" y="246" font-size="15" font-weight="bold">Scenario + Params</text><text x="48" y="266" font-size="11">资源 · 行动模式 · 制度参数</text>
+        <text x="304" y="245" font-size="15" font-weight="bold">AgentState [1..N]</text><text x="304" y="266" font-size="11">道德 · 身份 · 贝壳 · 食物 · 疲劳</text>
+        <text x="584" y="245" font-size="15" font-weight="bold">Metrics / Result</text><text x="584" y="266" font-size="11">幸福 · 交易 · 账本</text>
+        <g stroke="#8eb3aa" fill="#dcefe9"><rect x="34" y="337" width="165" height="65"/><rect x="220" y="337" width="165" height="65"/><rect x="406" y="337" width="165" height="65"/><rect x="592" y="337" width="145" height="65"/></g>
+        <text x="46" y="361" font-size="14" font-weight="bold">HuntingEngine</text><text x="46" y="380" font-size="11">遭遇 · 猎获</text><text x="233" y="361" font-size="14" font-weight="bold">Market</text><text x="233" y="380" font-size="11">食物 ↔ 贝壳</text><text x="420" y="361" font-size="14" font-weight="bold">Hierarchy</text><text x="420" y="380" font-size="11">分成 · 晋升</text><text x="605" y="361" font-size="14" font-weight="bold">Wellbeing</text><text x="605" y="380" font-size="11">消费 · 道德</text>
+        <g stroke="#b7a6ca" fill="#eee8f5"><rect x="790" y="112" width="200" height="72"/><rect x="790" y="222" width="200" height="75"/><rect x="790" y="337" width="200" height="65"/></g>
+        <text x="804" y="139" font-size="14" font-weight="bold">Decision Driver</text><text x="804" y="159" font-size="11">规则 / LLM + 校验 / 兜底</text>
+        <text x="804" y="249" font-size="14" font-weight="bold">OpenAI-compatible</text><text x="804" y="269" font-size="11">DeepSeek / NO.1 API / 科技云</text>
+        <text x="804" y="363" font-size="14" font-weight="bold">LLM Trace</text><text x="804" y="382" font-size="11">请求与结果记录</text>
+        <g fill="#18313f"><circle cx="208" cy="237" r="12"/><circle cx="532" cy="128" r="12"/><circle cx="500" cy="237" r="12"/><circle cx="720" cy="237" r="12"/><circle cx="548" cy="351" r="12"/><circle cx="965" cy="128" r="12"/><circle cx="935" cy="128" r="12"/><circle cx="716" cy="29" r="12"/><circle cx="700" cy="351" r="12"/></g>
+        <g font-size="10" font-weight="bold" text-anchor="middle"><text class="white" x="208" y="241">06</text><text class="white" x="532" y="132">03</text><text class="white" x="500" y="241">09</text><text class="white" x="720" y="241">08</text><text class="white" x="548" y="355">07</text><text class="white" x="965" y="132">05</text><text class="white" x="935" y="132">10</text><text class="white" x="716" y="33">11</text><text class="white" x="700" y="355">04</text></g>
+        <g fill="none" stroke="#37515f" stroke-width="1.8" marker-end="url(#arrow)"><path d="M180 29H220"/><path d="M430 29H470"/><path d="M580 53V100H415V113"/><path d="M280 150H130V220"/><path d="M415 188V220"/><path d="M550 150H655V220"/><path d="M320 290V314H116V337"/><path d="M365 290V337"/><path d="M445 290V314H488V337"/><path d="M510 290V314H665V337"/><path d="M550 148H790"/><path d="M890 184V222"/><path d="M890 297V337"/></g>
+        <text x="622" y="140" font-size="11">observation / decision</text><text x="811" y="211" font-size="11">chat completion</text>
+        <text x="24" y="450" font-size="11" fill="#46616d">实线：运行调用或状态引用；Market / Hierarchy 为 Simulation 中的方法职责，并非独立类。</text>
+      </svg>
+    </section>
+    <section class="card classes">
+      <h2><span class="badge">02</span>领域类图：所有权、调用与主要字段</h2>
+      <svg viewBox="0 0 1000 345" role="img" aria-label="领域类 UML 图">
+        <defs><marker id="ar2" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="#405661"/></marker></defs>
+        <g fill="#fff" stroke="#708d97"><rect x="330" y="5" width="300" height="100"/><rect x="10" y="170" width="220" height="135"/><rect x="260" y="170" width="220" height="135"/><rect x="510" y="170" width="220" height="135"/><rect x="760" y="170" width="225" height="135"/></g>
+        <g fill="#18313f"><rect x="330" y="5" width="300" height="29"/><rect x="10" y="170" width="220" height="29"/><rect x="260" y="170" width="220" height="29"/><rect x="510" y="170" width="220" height="29"/><rect x="760" y="170" width="225" height="29"/></g>
+        <g font-size="14" font-weight="bold"><text class="white" x="342" y="25">Simulation</text><text class="white" x="22" y="190">Scenario / Parameters</text><text class="white" x="272" y="190">AgentState</text><text class="white" x="522" y="190">AgentDecision</text><text class="white" x="772" y="190">HuntingEngine</text></g>
+        <g font-size="12"><text x="342" y="53">agents · scenario · params · records</text><text x="342" y="72">run() · _run_tick() · _result()</text><text x="342" y="91">_run_market() · _evaluate_promotions()</text>
+        <text x="22" y="220">mode · resource · pressure</text><text x="22" y="240">ticks · seed · trade / rank flags</text><text x="22" y="260">target_supply_ratio</text>
+        <text x="272" y="220">id · moral_type · moral_weights</text><text x="272" y="240">role · shells · food_reserve</text><text x="272" y="260">fatigue · status · wellbeing</text><text x="272" y="280">period_hunting_contribution</text>
+        <text x="522" y="220">participation_action · effort</text><text x="522" y="240">compliance_action · share_rate</text><text x="522" y="260">restraint_rate · reason / source</text>
+        <text x="772" y="220">meat_scale</text><text x="772" y="240">resolve_hunt()</text><text x="772" y="260">HuntOutcome</text></g>
+        <g fill="none" stroke="#405661" stroke-width="1.7" marker-end="url(#ar2)"><path d="M360 105V135H120V170"/><path d="M420 105V140H370V170"/><path d="M540 105V140H620V170"/><path d="M600 105V135H872V170"/></g>
+        <text x="80" y="155" font-size="11">配置</text><text x="370" y="155" font-size="11">维护 [1..N]</text><text x="600" y="155" font-size="11">生成 / 应用</text><text x="835" y="155" font-size="11">调用</text>
+      </svg>
+    </section>
+    <section class="card flowcard">
+      <h2><span class="badge">03</span>单 tick 执行流程</h2>
+      <div class="flow"><div class="step"><strong>1 救济与准备</strong><span>库存起点；兑现上一轮待救济；更新压力 / 分组</span></div><div class="step"><strong>2 个体决策</strong><span>按 Agent 顺序执行规则或 LLM；汇总行为</span></div><div class="step"><strong>3 狩猎与分配</strong><span>按总体 / 抱团 / 个体模式产出并分配</span></div><div class="step"><strong>4 市场交易</strong><span>按供需撮合，交换食物与贝壳</span></div><div class="step"><strong>5 消费与状态</strong><span>实际消费、库存上限、缺粮与疲劳</span></div><div class="step"><strong>6 幸福与道德</strong><span>幸福评分、道德一致性与权重适应</span></div><div class="step"><strong>7 账本与日志</strong><span>记录指标、事件、交易和守恒账本</span></div><div class="step"><strong>8 定期评选</strong><span>到评选周期时更新角色和上下级</span></div></div>
+      <div class="rule"></div>
+      <h2><span class="badge">04</span>个体状态与资源闭环</h2>
+      <p><span class="tag">Normal 正常</span> 食物不足 → <span class="tag" style="background:#fae5e4;color:#a13f49">Extreme_Fatigue 极度疲劳</span> → 下一轮按配置兑现救济；本轮消费满足需求后可恢复 Normal。</p>
+      <p class="small muted">食物账本：期初库存 + 生产 + 外部救济 − 消费 − 损耗 − 期末库存；贝壳在买卖双方之间转移。公共粮仓救济为内部转移，不重复计为外部输入。</p>
+      <p class="small muted">编号索引：01 组件 · 02 类图 · 03 单 tick · 04 状态 · 05 Prompt · 06 情境 · 07 身份 · 08 结果 · 09 状态对象 · 10 决策 · 11 接口。</p>
+    </section>
+  </div>
+  <div class="col">
+    <section class="card result">
+      <h2><span class="badge">08</span>实验结果 Result</h2>
+      <div class="code">{
+  scenario, parameters, model_status,
+  society_metrics, moral_type_metrics,
+  group_metrics, time_series,
+  system_logs, agent_logs, final_agents,
+  trade_metrics, trade_records,
+  role_metrics, hierarchy,
+  promotion_events, promotion_reviews,
+  food_accounting, shell_accounting,
+  feasibility_checks, experiment_protocol
+}</div>
+      <p class="small muted">字段为单情境结果示意；多重复结果会聚合指标，并保留首个重复的样本记录。</p>
+    </section>
+    <section class="card observation">
+      <h2><span class="badge">09</span>Agent 状态 / 观察对象</h2>
+      <div class="code">AgentState {
+  id, age_group, sex, moral_type,
+  moral_weights, physical, exploration,
+  coordination, compliance, need,
+  wellbeing, food_reserve, fatigue, status,
+  role, superior_id, role_since_tick,
+  shell_balance, group_id,
+  hunting_contribution,
+  period_hunting_contribution, ...
+}
+
+Prompt payload {
+  sc: {id, m, sp, op, c, i},
+  ctx: {t, n, p, u, prior},
+  ag: {id, age, sex, m, mw, fit, phy,
+       exp, coor, comp, need, well,
+       res, fat, role, shells, st, gid}
+}</div>
+      <p class="small muted">Prompt 的简写字段为标准路径；紧凑路径使用更短的字段及不同缩写。</p>
+    </section>
+    <section class="card decision">
+      <h2><span class="badge">10</span>Agent Decision JSON</h2>
+      <div class="code">{
+  "participation_action": 0.9,
+  "effort": 0.6,
+  "compliance_action": 0.7,
+  "share_rate": 0.5,
+  "restraint_rate": 0.2,
+  "reason": "fit"
+}</div>
+      <p class="small">五个行为值为 0–1；内部 AgentDecision 另含 moral_fit、decision_source、decision_reason。</p>
+    </section>
+    <section class="card audit">
+      <h2><span class="badge">11</span>接口、导出与实现审计</h2>
+      <h3>HTTP 接口</h3>
+      <p class="small">GET /api/defaults · /api/scenarios · /api/llm-traces<br>POST /api/run · /api/run-stream · /api/stop<br>POST /api/model-test · /api/llm-traces/clear</p>
+      <h3>流与导出</h3><p>run-stream 返回 NDJSON 事件，前端展示日志与指标并导出实验 JSON。run 返回批次结果；多重复聚合存在记录截取。</p>
+      <h3>实现边界</h3><ul><li>环境、交易、分配、状态和幸福评分由 Python 本地实现。</li><li>Agent 提示词产生行为参数，不直接改写环境状态。</li><li>模型失败时可局部回退规则；结果中的来源与日志应一并检查。</li><li>情境供给比为目标值；实际产出受行动和组织效率影响。</li></ul>
+      <p class="small muted">源码：server.py、simulation.py、models.py、hunting.py、wellbeing.py、metrics.py、llm/providers.py、frontend/src/App.tsx。图基于当前工作区源码，包含未提交修改。</p>
+    </section>
+  </div>
+</main>
+<footer><span>Morality &amp; Happiness System UML Master Poster · A0 Landscape · Source-grounded at working tree</span><span>单页总图 / 11 个编号索引 · 2026-11-02</span></footer>
+</body>
+</html>

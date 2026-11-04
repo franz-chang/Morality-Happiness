@@ -87,8 +87,9 @@ def _dict_at(values: dict[str, Any], key: str) -> dict[str, Any]:
 
 def _parse_simple_yaml(text: str) -> dict[str, Any]:
     root: dict[str, Any] = {}
-    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
-    for raw_line in text.splitlines():
+    stack: list[tuple[int, dict[str, Any] | list[Any]]] = [(-1, root)]
+    lines = text.splitlines()
+    for index, raw_line in enumerate(lines):
         if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
         line = _strip_inline_comment(raw_line.rstrip())
@@ -97,7 +98,12 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
         indent = len(line) - len(line.lstrip(" "))
         stripped = line.strip()
         if stripped.startswith("- "):
-            raise ValueError("config.yaml fallback parser supports mappings, not lists")
+            while stack and indent <= stack[-1][0]:
+                stack.pop()
+            if not stack or not isinstance(stack[-1][1], list):
+                raise ValueError("config.yaml fallback parser found a list item outside a list")
+            stack[-1][1].append(_parse_scalar(stripped[2:].strip()))
+            continue
         key, separator, value = stripped.partition(":")
         if not separator:
             continue
@@ -106,8 +112,18 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
         while stack and indent <= stack[-1][0]:
             stack.pop()
         parent = stack[-1][1]
+        if not isinstance(parent, dict):
+            raise ValueError("config.yaml fallback parser supports scalar lists only")
         if value == "":
-            child: dict[str, Any] = {}
+            next_is_list = False
+            for following in lines[index + 1 :]:
+                if not following.strip() or following.lstrip().startswith("#"):
+                    continue
+                next_line = _strip_inline_comment(following.rstrip())
+                next_indent = len(next_line) - len(next_line.lstrip(" "))
+                next_is_list = next_indent > indent and next_line.strip().startswith("- ")
+                break
+            child: dict[str, Any] | list[Any] = [] if next_is_list else {}
             parent[key] = child
             stack.append((indent, child))
         else:

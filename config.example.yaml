@@ -3,12 +3,12 @@
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 38471
 
 simulation:
   population_size: 120
-  ticks: 56
-  replications: 1
+  ticks: 560
+  replications: 10
   seed: 42
   need_base: 1.5
   food_scale: 1.6
@@ -20,6 +20,8 @@ simulation:
   group_cost_per_team: 0.45
   base_combat_power: 10.0
   prey_meat_scale: 0.18
+  scarcity_resource_multiplier: 1.21094 # S3 baseline calibration, 560 ticks, seed 42
+  abundance_resource_multiplier: 0.92285 # S6 baseline calibration, 560 ticks, seed 42
   environment_volatility: 0.1
   organized_equal_weight: 0.8
   share_norm_alt_weight: 0.4
@@ -42,16 +44,26 @@ simulation:
   rank_enabled: true
   rank_split_enabled: true
   promotion_enabled: true
-  initial_shells: 8.0
+  initial_shells: 30.0 # Used only by the equal-shells robustness control.
+  initial_shells_distribution: "uniform"
+  initial_shells_min: 20.0
+  initial_shells_max: 40.0
+  burn_in_ticks: 28
+  relief_source: "external"
+  public_food_reserve: 0.0
+  reference_meals_per_agent: 8.0
   shell_base_price: 1.0
-  shell_min_price: 0.25
-  shell_max_price: 4.0
-  trade_safety_buffer: 1.0
+  shell_min_price: 0.2
+  shell_max_price: 5.0
+  market_price_rule: "demand_supply"
+  buyer_budget_fraction: 0.5
+  trade_safety_buffer: 1.5
   max_trade_rounds: 1
+  idio_sigma: 0.3
   chief_share_weight: 4.0
   chieftain_share_weight: 2.0
   hunter_share_weight: 1.0
-  chief_leadership_share: 0.10
+  chief_leadership_share: 0.0307692308 # 4 / (4 + 7*2 + 112*1)
   chieftain_slots: 7
   hunters_per_chieftain: 16
   promotion_period: 28
@@ -75,17 +87,18 @@ llm:
       base_url: ""
       description: "不调用外部 API，使用本地可复现实验规则。"
     openai:
-      label: "OpenAI"
-      model: "gpt-4o-mini"
+      label: "NO.1 API（OpenAI兼容）"
+      model: "gpt-4o"
       api_key: "这里是API"
-      base_url: "https://api.openai.com/v1"
-      description: "Camel-AI + OpenAI 官方接口。"
+      base_url: "https://api.rcouyi.com/v1"
+      response_mode: "instruct"
+      description: "NO.1 API OpenAI 兼容接口；API Key 请填写该站控制台的令牌。Base URL 按官方聊天接口文档设置。"
     deepseek:
-      label: "DeepSeek-V4-flash"
-      model: "deepseek-v4-flash"
+      label: "DeepSeek-V4.1-Flash-1017"
+      model: "deepseek-flash"
       api_key: "这里是API"
       base_url: "https://api.deepseek.com/v1"
-      description: "OpenAI-Compatible direct-json + DeepSeek-V4-flash 行为决策接口，不经过 Camel-AI。"
+      description: "界面名称 DeepSeek-V4.1-Flash-1017；API 调用 ID 为 deepseek-flash。OpenAI-Compatible direct-json，不经过 Camel-AI。"
     local-deepseek:
       label: "本地DeepSeek"
       model: "deepseek-v4-flash"

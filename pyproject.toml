@@ -5,13 +5,12 @@ description = "Multi-agent hunting, morality, and wellbeing simulation."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "camel-ai>=0.2.0",
     "openai>=1.0.0",
     "PyYAML>=6.0.0",
 ]
 
 [project.optional-dependencies]
-llm = ["camel-ai>=0.2.0", "openai>=1.0.0", "PyYAML>=6.0.0"]
+llm = ["openai>=1.0.0", "PyYAML>=6.0.0"]
 dev = ["pytest>=8.0.0"]
 
 [project.scripts]

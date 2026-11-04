@@ -20,6 +20,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--replications", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--food-scale", type=float, default=None)
+    parser.add_argument("--scarcity-resource-multiplier", type=float, default=None)
+    parser.add_argument("--abundance-resource-multiplier", type=float, default=None)
+    parser.add_argument("--relief-source", choices=("external", "public", "none"), default=None)
+    parser.add_argument("--public-food-reserve", type=float, default=None)
     parser.add_argument("--lambda-c", type=float, default=None)
     parser.add_argument("--lambda-g", type=float, default=None)
     parser.add_argument("--env-volatility", type=float, default=None)
@@ -57,6 +61,14 @@ def main(argv: list[str] | None = None) -> None:
         overrides["seed"] = args.seed
     if args.food_scale is not None:
         overrides["food_scale"] = args.food_scale
+    if args.scarcity_resource_multiplier is not None:
+        overrides["scarcity_resource_multiplier"] = args.scarcity_resource_multiplier
+    if args.abundance_resource_multiplier is not None:
+        overrides["abundance_resource_multiplier"] = args.abundance_resource_multiplier
+    if args.relief_source is not None:
+        overrides["relief_source"] = args.relief_source
+    if args.public_food_reserve is not None:
+        overrides["public_food_reserve"] = args.public_food_reserve
     if args.lambda_c is not None:
         overrides["lambda_c"] = args.lambda_c
     if args.lambda_g is not None:

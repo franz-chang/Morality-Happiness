@@ -160,6 +160,7 @@ class Scenario:
     collectivization: float
     individualization: float
     moral_fit_weights: dict[str, float]
+    target_supply_ratio: float
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -182,13 +183,16 @@ class AgentState:
     need: float
     wellbeing: float
     food_reserve: float = 0.0
+    pending_relief: float = 0.0
     fatigue: float = 0.0
     status: Status = Status.NORMAL
     role: Role = Role.HUNTER
+    role_since_tick: int = 0
     superior_id: int | None = None
     shell_balance: float = 0.0
     shell_earned_from_trade: float = 0.0
     shell_spent_on_food: float = 0.0
+    shell_earned_from_hunting: float = 0.0
     food_bought: float = 0.0
     food_sold: float = 0.0
     trade_count: int = 0
@@ -196,10 +200,17 @@ class AgentState:
     previous_group_id: int | None = None
     group_affinity: dict[int, float] = field(default_factory=dict)
     cumulative_food: float = 0.0
+    cumulative_food_consumed: float = 0.0
+    cumulative_unmet_food: float = 0.0
+    cumulative_relief_received: float = 0.0
     hunting_contribution: float = 0.0
     period_hunting_contribution: float = 0.0
     extreme_triggers: int = 0
     allocated_history: list[float] = field(default_factory=list)
+    food_consumed_history: list[float] = field(default_factory=list)
+    unmet_food_history: list[float] = field(default_factory=list)
+    relief_received_history: list[float] = field(default_factory=list)
+    extreme_trigger_history: list[int] = field(default_factory=list)
     wellbeing_history: list[float] = field(default_factory=list)
     moral_consistency_history: list[float] = field(default_factory=list)
 
@@ -233,20 +244,26 @@ class AgentState:
             "need": self.need,
             "wellbeing": self.wellbeing,
             "food_reserve": self.food_reserve,
+            "pending_relief": self.pending_relief,
             "fatigue": self.fatigue,
             "status": self.status.value,
             "role": self.role.value,
+            "role_since_tick": self.role_since_tick,
             "role_label": self.role.label,
             "superior_id": self.superior_id,
             "shell_balance": self.shell_balance,
             "shell_earned_from_trade": self.shell_earned_from_trade,
             "shell_spent_on_food": self.shell_spent_on_food,
+            "shell_earned_from_hunting": self.shell_earned_from_hunting,
             "food_bought": self.food_bought,
             "food_sold": self.food_sold,
             "trade_count": self.trade_count,
             "group_id": self.group_id,
             "group_affinity": dict(self.group_affinity),
             "cumulative_food": self.cumulative_food,
+            "cumulative_food_consumed": self.cumulative_food_consumed,
+            "cumulative_unmet_food": self.cumulative_unmet_food,
+            "cumulative_relief_received": self.cumulative_relief_received,
             "hunting_contribution": self.hunting_contribution,
             "extreme_triggers": self.extreme_triggers,
         }

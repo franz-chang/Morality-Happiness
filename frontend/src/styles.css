@@ -162,12 +162,22 @@ h2 {
 
 .workspace {
   display: grid;
-  grid-template-columns: 310px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
-  column-gap: 16px;
+  column-gap: 0;
   row-gap: 12px;
   max-width: 1480px;
   margin: 0 auto;
+}
+
+.workspace.parameters-collapsed {
+  grid-template-columns: 108px minmax(0, 1fr);
+  column-gap: 16px;
+}
+
+.workspace:not(.parameters-collapsed) .dashboard,
+.workspace:not(.parameters-collapsed) .analysis-cta-row {
+  display: none;
 }
 
 .control-panel,
@@ -180,8 +190,157 @@ h2 {
 }
 
 .control-panel {
+  position: relative;
   align-self: start;
+  width: min(100%, 980px);
+  margin: 0 auto;
   padding: 14px;
+  transition: width 180ms ease, padding 180ms ease;
+}
+
+.parameters-collapsed .control-panel {
+  width: auto;
+  margin: 0;
+}
+
+/* The initial configuration page is intentionally compact: all controls are
+   visible in two columns before the user starts a simulation. */
+.workspace:not(.parameters-collapsed) .control-panel {
+  display: grid;
+  width: min(100%, 1180px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+  align-content: start;
+}
+
+.workspace:not(.parameters-collapsed) .panel-title,
+.workspace:not(.parameters-collapsed) .model-selector,
+.workspace:not(.parameters-collapsed) .model-note,
+.workspace:not(.parameters-collapsed) .scenario-section-title,
+.workspace:not(.parameters-collapsed) .scenario-grid {
+  grid-column: 1 / -1;
+}
+
+.workspace:not(.parameters-collapsed) .panel-title {
+  margin-bottom: 24px;
+  padding-right: 112px;
+  font-size: 18px;
+}
+
+.workspace:not(.parameters-collapsed) .model-selector {
+  margin-bottom: 12px;
+  font-size: 16px;
+}
+
+.workspace:not(.parameters-collapsed) .model-note {
+  display: none;
+}
+
+.workspace:not(.parameters-collapsed) .select-control select {
+  min-height: 40px;
+  font-size: 16px;
+}
+
+.workspace:not(.parameters-collapsed) .param-control {
+  grid-template-columns: minmax(0, 1fr) 86px;
+  min-height: 36px;
+  gap: 6px;
+  font-size: 16px;
+}
+
+.workspace:not(.parameters-collapsed) .param-control input {
+  min-height: 34px;
+  padding: 0 6px;
+  font-size: 16px;
+}
+
+.workspace:not(.parameters-collapsed) .toggle-control {
+  grid-template-columns: minmax(0, 1fr) 34px;
+  min-height: 36px;
+  font-size: 16px;
+}
+
+.workspace:not(.parameters-collapsed) .toggle-track {
+  width: 30px;
+  height: 18px;
+  padding: 2px;
+}
+
+.workspace:not(.parameters-collapsed) .toggle-track span {
+  width: 14px;
+  height: 14px;
+}
+
+.workspace:not(.parameters-collapsed) .toggle-control input:checked + .toggle-track span {
+  transform: translateX(12px);
+}
+
+.workspace:not(.parameters-collapsed) .scenario-section-title {
+  margin: 5px 0 2px;
+  padding-top: 5px;
+  font-size: 18px;
+}
+
+.workspace:not(.parameters-collapsed) .scenario-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 9px;
+}
+
+.workspace:not(.parameters-collapsed) .scenario-chip {
+  min-height: 40px;
+  padding: 3px 6px;
+}
+
+.workspace:not(.parameters-collapsed) .scenario-chip strong,
+.workspace:not(.parameters-collapsed) .scenario-chip span {
+  display: inline;
+  font-size: 16px;
+}
+
+.workspace:not(.parameters-collapsed) .scenario-chip strong {
+  margin-right: 4px;
+}
+
+.control-panel-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 96px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--teal);
+  padding: 0 10px;
+  font-size: 16px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.control-panel-toggle:hover {
+  border-color: var(--teal);
+  background: #eef6f3;
+}
+
+.control-panel.is-collapsed {
+  min-height: 48px;
+  padding: 4px;
+  overflow: hidden;
+}
+
+.control-panel.is-collapsed > :not(.control-panel-toggle) {
+  display: none;
+}
+
+.control-panel.is-collapsed .control-panel-toggle {
+  position: static;
+  width: 100px;
+  height: 46px;
 }
 
 .panel-title,
@@ -194,6 +353,7 @@ h2 {
 
 .panel-title {
   margin-bottom: 14px;
+  padding-right: 36px;
   font-weight: 800;
 }
 
@@ -404,11 +564,11 @@ h2 {
 }
 
 .dashboard {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
 }
 
 .economy-surface {
@@ -478,6 +638,8 @@ h2 {
 
 .role-card > span {
   margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.35;
   font-variant-numeric: tabular-nums;
 }
 
@@ -495,6 +657,10 @@ h2 {
 
 .kpi.wide {
   grid-column: 1 / -1;
+}
+
+.kpi.wide strong {
+  font-size: 19px;
 }
 
 .kpi > span {
@@ -960,8 +1126,9 @@ h2 {
 .log-surface {
   display: flex;
   flex-direction: column;
+  height: clamp(280px, 50vh, 520px);
   min-height: 0;
-  margin-bottom: 0;
+  margin: 0;
 }
 
 .analysis-cta-row {
@@ -984,6 +1151,7 @@ h2 {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   border-top: 1px solid #eef1ee;
   font-size: 12px;
 }
@@ -1087,12 +1255,11 @@ h2 {
   }
 
   .dashboard {
-    height: auto !important;
-    overflow: visible;
+    height: auto;
   }
 
   .log-surface {
-    min-height: 420px;
+    height: clamp(280px, 50vh, 480px);
   }
 
   .analysis-cta-row {
@@ -1101,6 +1268,14 @@ h2 {
 
   .control-panel {
     position: static;
+  }
+
+  .workspace.parameters-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .control-panel.is-collapsed {
+    justify-self: start;
   }
 
   .chart-grid {

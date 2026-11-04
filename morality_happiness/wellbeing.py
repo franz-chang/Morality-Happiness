@@ -68,7 +68,7 @@ def evaluate_wellbeing(
     agent: AgentState,
     decision: AgentDecision,
     scenario: Scenario,
-    allocated_food: float,
+    food_consumed: float,
     effective_need: float,
     perceived_fairness: float,
     autonomy: float,
@@ -78,7 +78,7 @@ def evaluate_wellbeing(
     moral_consistency_weight: float,
     autonomy_weight: float,
 ) -> WellbeingScores:
-    food_ratio = allocated_food / max(0.1, effective_need)
+    food_ratio = food_consumed / max(0.1, effective_need)
     material = material_wellbeing_score(food_ratio)
     fairness = clip(perceived_fairness, 0.0, 1.0)
     autonomy = clip(autonomy, 0.0, 1.0)

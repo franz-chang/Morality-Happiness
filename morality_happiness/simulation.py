@@ -32,7 +32,7 @@ from .models import (
     WellbeingScores,
 )
 from .settings import llm_provider_settings
-from .utils import clip, gini, mean, safe_div
+from .utils import clip, gini, mean, safe_div, stdev
 from .wellbeing import evaluate_wellbeing
 
 
@@ -47,6 +47,7 @@ class Simulation:
         parameters: SimulationParameters | None = None,
         event_callback: StreamCallback | None = None,
         stop_checker: StopChecker | None = None,
+        collect_agent_logs: bool = True,
     ) -> None:
         if scenario_id not in SCENARIOS:
             raise ValueError(f"Unknown scenario_id: {scenario_id}")
@@ -57,9 +58,19 @@ class Simulation:
             else SimulationParameters.from_dict({})
         )
         scenario_offset = int(self.scenario.id[1:]) * 100_000
-        self.rng = random.Random(self.params.seed + scenario_offset)
+        self.scenario_seed = self.params.seed + scenario_offset
+        # Pair starting populations and exogenous streams; keep endogenous grouping scenario-seeded.
+        self.init_rng = random.Random(self.params.seed)
+        self.environment_rng = random.Random(self.params.seed + 0xE001)
+        self.hunting_rng = random.Random(self.params.seed + 0xB007)
+        self.individual_rng = random.Random(self.params.seed + 0x1D1D)
+        self.group_rng = random.Random(self.scenario_seed + 0x6A0B)
         self.hunting = HuntingEngine(meat_scale=self.params.prey_meat_scale)
         self.agents = self._initialize_agents()
+        self.initial_shell_total = sum(agent.shell_balance for agent in self.agents)
+        self.promotion_tiebreakers = {
+            agent.id: self.init_rng.random() for agent in self.agents
+        }
         self.groups: dict[int, list[int]] = {}
         self.chief_id: int | None = None
         self.chieftain_ids: list[int] = []
@@ -72,12 +83,26 @@ class Simulation:
         self.system_logs: list[dict[str, Any]] = []
         self.trade_records: list[dict[str, Any]] = []
         self.promotion_events: list[dict[str, Any]] = []
+        self.promotion_reviews: list[dict[str, Any]] = []
         self.event_callback = event_callback
         self.stop_checker = stop_checker
+        self.collect_agent_logs = collect_agent_logs
         self._log_sequence = 0
         self.total_food_by_tick: list[float] = []
+        self.food_consumed_by_tick: list[float] = []
+        self.unmet_food_by_tick: list[float] = []
+        self.external_relief_by_tick: list[float] = []
+        self.public_relief_by_tick: list[float] = []
+        self.food_loss_by_tick: list[float] = []
+        self.food_ledger_records: list[dict[str, float | int]] = []
         self.survival_rates: list[float] = []
         self.shell_totals_by_tick: list[float] = []
+        self.initial_public_food_reserve = self.params.public_food_reserve
+        self.public_food_reserve = self.params.public_food_reserve
+        self.external_relief_total = 0.0
+        self.public_relief_total = 0.0
+        self.total_food_consumed = 0.0
+        self.total_food_loss = 0.0
         self.last_underfed_rate = self.scenario.scarcity_pressure
         self.model_status = provider_status(self.params.llm_provider).to_dict()
         self.llm_provider = None
@@ -140,6 +165,8 @@ class Simulation:
         self._emit({"type": "log", "target": "system_logs", "scenario_id": self.scenario.id, "log": record})
 
     def _append_agent_log(self, record: dict[str, Any]) -> None:
+        if not self.collect_agent_logs:
+            return
         self._log_sequence += 1
         record.setdefault("sequence", self._log_sequence)
         self.agent_logs.append(record)
@@ -157,7 +184,7 @@ class Simulation:
         population = self.params.population_size
         moral_cycle = list(MoralType)
         moral_types = [moral_cycle[idx % len(moral_cycle)] for idx in range(population)]
-        self.rng.shuffle(moral_types)
+        self.init_rng.shuffle(moral_types)
         agents: list[AgentState] = []
         for agent_id, moral_type in enumerate(moral_types):
             age_group = self._sample_age_group()
@@ -169,17 +196,17 @@ class Simulation:
             restraint = moral_weights["self_rest"] + moral_weights["alt_rest"]
             alt = moral_weights["alt_dev"] + moral_weights["alt_rest"]
             compliance = clip(
-                0.35 + 0.35 * coordination + 0.15 * restraint + 0.10 * alt + self.rng.gauss(0, 0.05),
+                0.35 + 0.35 * coordination + 0.15 * restraint + 0.10 * alt + self.init_rng.gauss(0, 0.05),
                 0.0,
                 1.0,
             )
             need = self.params.need_base * profile["need_multiplier"]
-            wellbeing = clip(self.rng.gauss(60.0, 10.0), 35.0, 82.0)
+            wellbeing = clip(self.init_rng.gauss(60.0, 10.0), 35.0, 82.0)
             agents.append(
                 AgentState(
                     id=agent_id,
                     age_group=age_group,
-                    sex="F" if self.rng.random() < 0.5 else "M",
+                    sex="F" if self.init_rng.random() < 0.5 else "M",
                     moral_type=moral_type,
                     moral_weights=moral_weights,
                     physical=physical,
@@ -188,7 +215,14 @@ class Simulation:
                     compliance=compliance,
                     need=need,
                     wellbeing=wellbeing,
-                    shell_balance=self.params.initial_shells,
+                    shell_balance=(
+                        self.init_rng.uniform(
+                            self.params.initial_shells_min,
+                            self.params.initial_shells_max,
+                        )
+                        if self.params.initial_shells_distribution == "uniform"
+                        else self.params.initial_shells
+                    ),
                 )
             )
         return agents
@@ -197,10 +231,32 @@ class Simulation:
         """Create the initial fixed-capacity hierarchy before the first tick."""
         if not self.params.rank_enabled or not self.agents:
             return
-        ranked = sorted(self.agents, key=lambda agent: (-agent.coordination, agent.id))
-        self.chief_id = ranked[0].id
-        chieftain_count = min(self.params.chieftain_slots, max(1, len(ranked) - 1))
-        self.chieftain_ids = [agent.id for agent in ranked[1 : 1 + chieftain_count]]
+        buckets: dict[tuple[MoralType, AgeGroup], list[AgentState]] = {}
+        for agent in self.agents:
+            buckets.setdefault((agent.moral_type, agent.age_group), []).append(agent)
+        for bucket in buckets.values():
+            self.init_rng.shuffle(bucket)
+        selected_counts = {key: 0 for key in buckets}
+        stratum_sizes = {key: len(bucket) for key, bucket in buckets.items()}
+
+        def select_balanced() -> AgentState:
+            min_share = min(
+                selected_counts[key] / stratum_sizes[key]
+                for key, bucket in buckets.items()
+                if bucket
+            )
+            eligible = [
+                key for key, bucket in buckets.items()
+                if bucket
+                and abs(selected_counts[key] / stratum_sizes[key] - min_share) < 1e-12
+            ]
+            key = self.init_rng.choice(eligible)
+            selected_counts[key] += 1
+            return buckets[key].pop()
+
+        self.chief_id = select_balanced().id
+        chieftain_count = min(self.params.chieftain_slots, max(1, len(self.agents) - 1))
+        self.chieftain_ids = [select_balanced().id for _ in range(chieftain_count)]
         self._rebuild_rank_groups(initial=True)
 
     def _rebuild_rank_groups(self, *, initial: bool = False) -> None:
@@ -257,7 +313,7 @@ class Simulation:
         chief.group_id = None
 
     def _sample_age_group(self) -> AgeGroup:
-        roll = self.rng.random()
+        roll = self.init_rng.random()
         if roll < 0.35:
             return AgeGroup.YOUNG
         if roll < 0.80:
@@ -265,11 +321,14 @@ class Simulation:
         return AgeGroup.OLD
 
     def _ability(self, center: float) -> float:
-        return clip(self.rng.gauss(center, 0.08), 0.15, 0.95)
+        return clip(self.init_rng.gauss(center, 0.08), 0.15, 0.95)
 
     def _run_tick(self, tick: int) -> None:
         self._raise_if_stopped()
-        self._recover_rescued_agents()
+        food_stock_start = self.public_food_reserve + sum(agent.food_reserve for agent in self.agents)
+        external_relief_before = self.external_relief_total
+        public_relief_before = self.public_relief_total
+        relief_received_by_agent = self._recover_rescued_agents()
         pressure_index = clip(
             (1.0 - self.params.group_need_memory_weight) * self.scenario.scarcity_pressure
             + self.params.group_need_memory_weight * self.last_underfed_rate,
@@ -334,6 +393,9 @@ class Simulation:
             )
 
         starved_count = 0
+        tick_consumed = 0.0
+        tick_unmet = 0.0
+        tick_food_loss = 0.0
         for agent in self.agents:
             self._raise_if_stopped()
             decision = decisions[agent.id]
@@ -345,18 +407,23 @@ class Simulation:
             status_before = agent.status
             effective_need = effective_needs[agent.id]
             available = agent.food_reserve + allocated
-            starved = available + 1e-9 < effective_need
+            food_consumed = min(available, effective_need)
+            unmet_food = max(0.0, effective_need - food_consumed)
+            starved = unmet_food > 1e-9
+            surplus = max(0.0, available - food_consumed)
+            reserve_cap = agent.need * self.params.reserve_cap_days
+            food_loss = max(0.0, surplus - reserve_cap)
+            agent.food_reserve = min(surplus, reserve_cap)
 
             if starved:
                 starved_count += 1
                 agent.extreme_triggers += 1
                 agent.status = Status.EXTREME_FATIGUE
-                agent.food_reserve = agent.need
+                agent.pending_relief = agent.need if self.params.relief_source != "none" else 0.0
                 agent.fatigue = max(0.0, agent.fatigue - 0.1)
             else:
                 agent.status = Status.NORMAL
-                reserve_cap = agent.need * self.params.reserve_cap_days
-                agent.food_reserve = min(reserve_cap, max(0.0, available - effective_need))
+                agent.pending_relief = 0.0
 
             if decision.effort <= 1e-9 or status_before is Status.EXTREME_FATIGUE:
                 agent.fatigue = max(0.0, agent.fatigue - 0.1)
@@ -369,7 +436,7 @@ class Simulation:
                 agent=agent,
                 decision=decision,
                 scenario=self.scenario,
-                allocated_food=allocated,
+                food_consumed=food_consumed,
                 effective_need=effective_need,
                 perceived_fairness=float(context.get("fairness", 0.5)),
                 autonomy=float(context.get("autonomy", self.scenario.individualization)),
@@ -381,7 +448,14 @@ class Simulation:
             )
             agent.wellbeing = scores.composite
             agent.cumulative_food += allocated
+            agent.cumulative_food_consumed += food_consumed
+            agent.cumulative_unmet_food += unmet_food
+            agent.cumulative_relief_received += relief_received_by_agent.get(agent.id, 0.0)
             agent.allocated_history.append(allocated)
+            agent.food_consumed_history.append(food_consumed)
+            agent.unmet_food_history.append(unmet_food)
+            agent.relief_received_history.append(relief_received_by_agent.get(agent.id, 0.0))
+            agent.extreme_trigger_history.append(1 if starved else 0)
             agent.wellbeing_history.append(agent.wellbeing)
             agent.moral_consistency_history.append(scores.moral_consistency)
             self._adapt_moral_weights(
@@ -398,6 +472,9 @@ class Simulation:
                     decision=decision,
                     context=context,
                     allocated=allocated,
+                    food_consumed=food_consumed,
+                    unmet_food=unmet_food,
+                    relief_received=relief_received_by_agent.get(agent.id, 0.0),
                     effective_need=effective_need,
                     reserve_before=reserve_before,
                     fatigue_before=fatigue_before,
@@ -420,13 +497,62 @@ class Simulation:
                     },
                 )
             )
+            tick_consumed += food_consumed
+            tick_unmet += unmet_food
+            tick_food_loss += food_loss
 
         survival_rate = 1.0 - starved_count / max(1, len(self.agents))
         self.last_underfed_rate = 1.0 - survival_rate
         self.survival_rates.append(survival_rate)
         self.total_food_by_tick.append(production["total_food"])
+        self.food_consumed_by_tick.append(tick_consumed)
+        self.unmet_food_by_tick.append(tick_unmet)
+        external_relief = self.external_relief_total - external_relief_before
+        public_relief = self.public_relief_total - public_relief_before
+        self.external_relief_by_tick.append(external_relief)
+        self.public_relief_by_tick.append(public_relief)
+        self.food_loss_by_tick.append(tick_food_loss)
+        self.total_food_consumed += tick_consumed
+        self.total_food_loss += tick_food_loss
+        food_stock_end = self.public_food_reserve + sum(agent.food_reserve for agent in self.agents)
+        food_ledger_error = (
+            food_stock_start
+            + production["total_food"]
+            + external_relief
+            - tick_consumed
+            - tick_food_loss
+            - food_stock_end
+        )
+        self.food_ledger_records.append(
+            {
+                "tick": tick,
+                "opening_stock": food_stock_start,
+                "production": production["total_food"],
+                "external_relief": external_relief,
+                "consumption": tick_consumed,
+                "loss": tick_food_loss,
+                "closing_stock": food_stock_end,
+                "ledger_error": food_ledger_error,
+            }
+        )
         self.shell_totals_by_tick.append(sum(agent.shell_balance for agent in self.agents))
-        self.time_series.append(self._tick_record(tick, production, allocations, survival_rate, trade))
+        self.time_series.append(
+            self._tick_record(
+                tick,
+                production,
+                allocations,
+                survival_rate,
+                trade,
+                food_opening_stock=food_stock_start,
+                food_closing_stock=food_stock_end,
+                consumed=tick_consumed,
+                unmet=tick_unmet,
+                external_relief=external_relief,
+                public_relief=public_relief,
+                food_loss=tick_food_loss,
+                food_ledger_error=food_ledger_error,
+            )
+        )
         self._append_system_log(
             {
                 "tick": tick,
@@ -445,24 +571,42 @@ class Simulation:
                 "trade_food": trade["food_volume"],
                 "trade_shells": trade["shell_volume"],
                 "market_price": trade["clearing_price"],
+                "external_relief": external_relief,
+                "public_relief": public_relief,
+                "food_ledger_error": food_ledger_error,
             }
         )
         if (
             self.params.rank_enabled
             and self.params.promotion_enabled
-            and (tick % self.params.promotion_period == 0 or tick == self.params.ticks)
+            and self._promotion_due(tick)
         ):
             self._evaluate_promotions(tick)
 
-    def _empty_trade_record(self, tick: int) -> dict[str, float | int]:
+    def _promotion_due(self, tick: int) -> bool:
+        """Schedule the first review at burn-in completion, then every full period."""
+        first_review_tick = self.params.burn_in_ticks or self.params.promotion_period
+        return tick >= first_review_tick and (
+            (tick - first_review_tick) % self.params.promotion_period == 0
+        )
+
+    def _empty_trade_record(self, tick: int) -> dict[str, float | int | None]:
         return {
             "tick": tick,
             "food_volume": 0.0,
+            "food_volume_meals": 0.0,
             "shell_volume": 0.0,
-            "clearing_price": 0.0,
+            "clearing_price": None,
+            "normalized_price": None,
+            "price_anchor": 1.0,
+            "price_rule": self.params.market_price_rule,
+            "buyer_budget_fraction": self.params.buyer_budget_fraction,
             "buyers": 0,
             "sellers": 0,
             "transactions": 0,
+            "participant_ids": [],
+            "unfunded_demand": 0.0,
+            "total_demand_meals": 0.0,
         }
 
     def _run_market(
@@ -471,8 +615,8 @@ class Simulation:
         allocations: dict[int, float],
         effective_needs: dict[int, float],
         contexts: dict[int, dict[str, float]],
-    ) -> dict[str, float | int]:
-        """Run one deterministic food-for-shells clearing round after hunting."""
+    ) -> dict[str, float | int | None]:
+        """Clear one centralized food--shell market without creating either asset."""
         target = {
             agent.id: effective_needs[agent.id] * self.params.trade_safety_buffer
             for agent in self.agents
@@ -480,7 +624,10 @@ class Simulation:
         sellers = [
             {
                 "agent": agent,
-                "food": max(0.0, allocations.get(agent.id, 0.0) - target[agent.id]),
+                "food": max(
+                    0.0,
+                    agent.food_reserve + allocations.get(agent.id, 0.0) - target[agent.id],
+                ),
             }
             for agent in self.agents
         ]
@@ -495,65 +642,91 @@ class Simulation:
             }
             for agent in self.agents
         ]
-        buyers = [item for item in buyers if item["food"] > 1e-9 and item["agent"].shell_balance > 1e-9]
+        potential_buyers = [item for item in buyers if item["food"] > 1e-9]
         supply = sum(float(item["food"]) for item in sellers)
-        demand = sum(float(item["food"]) for item in buyers)
-        if supply <= 1e-9 or demand <= 1e-9:
+        demand = sum(float(item["food"]) for item in potential_buyers)
+        if supply > 1e-9 and demand > 1e-9:
+            clearing_price = (
+                self.params.shell_base_price
+                if self.params.market_price_rule == "fixed"
+                else clip(demand / supply, self.params.shell_min_price, self.params.shell_max_price)
+            )
+        else:
+            clearing_price = self.params.shell_base_price
+        for item in potential_buyers:
+            budget = item["agent"].shell_balance * self.params.buyer_budget_fraction
+            item["budget"] = budget
+            item["effective_food"] = min(float(item["food"]), budget / max(1e-12, clearing_price))
+        effective_demand = sum(float(item["effective_food"]) for item in potential_buyers)
+        buyers = [item for item in potential_buyers if float(item["effective_food"]) > 1e-9]
+        unfunded_demand = max(0.0, demand - effective_demand)
+        if supply <= 1e-9 or effective_demand <= 1e-9:
             record = self._empty_trade_record(tick)
-            record.update({"buyers": len(buyers), "sellers": len(sellers)})
+            record.update(
+                {
+                    "buyers": len(buyers),
+                    "sellers": len(sellers),
+                    "unfunded_demand": unfunded_demand,
+                    "total_demand_meals": demand / max(1e-12, self.params.need_base),
+                }
+            )
             self.trade_records.append(record)
             return record
 
-        scarcity = demand / max(1e-9, supply + demand)
-        clearing_price = clip(
-            self.params.shell_base_price * (0.85 + 0.60 * scarcity),
-            self.params.shell_min_price,
-            self.params.shell_max_price,
-        )
+        traded_food = min(supply, effective_demand)
+        for item in sellers:
+            item["remaining_food"] = traded_food * float(item["food"]) / supply
+        for item in buyers:
+            item["remaining_food"] = traded_food * float(item["effective_food"]) / effective_demand
         sellers.sort(key=lambda item: (item["agent"].shell_balance, item["agent"].id))
-        buyers.sort(key=lambda item: (-item["food"], item["agent"].id))
+        buyers.sort(key=lambda item: item["agent"].id)
         food_volume = 0.0
         shell_volume = 0.0
         transactions = 0
+        participant_ids: set[int] = set()
         seller_index = 0
         for buyer_item in buyers:
             buyer = buyer_item["agent"]
-            remaining = float(buyer_item["food"])
+            remaining = float(buyer_item["remaining_food"])
             for seller_item in sellers[seller_index:]:
                 if remaining <= 1e-9:
                     break
                 seller = seller_item["agent"]
-                available = float(seller_item["food"])
+                available = float(seller_item["remaining_food"])
                 if available <= 1e-9:
                     seller_index += 1
                     continue
-                affordable = buyer.shell_balance / clearing_price
-                amount = min(remaining, available, affordable)
-                if amount <= 1e-9:
+                amount_food = min(remaining, available)
+                if amount_food <= 1e-9:
                     break
-                shells = amount * clearing_price
-                allocations[seller.id] -= amount
-                allocations[buyer.id] = allocations.get(buyer.id, 0.0) + amount
+                shells = amount_food * clearing_price
+                from_allocation = min(amount_food, max(0.0, allocations.get(seller.id, 0.0)))
+                allocations[seller.id] = max(0.0, allocations.get(seller.id, 0.0) - from_allocation)
+                from_reserve = amount_food - from_allocation
+                if from_reserve > 1e-9:
+                    seller.food_reserve = max(0.0, seller.food_reserve - from_reserve)
+                allocations[buyer.id] = allocations.get(buyer.id, 0.0) + amount_food
                 seller.shell_balance += shells
                 buyer.shell_balance -= shells
-                seller.food_sold += amount
-                buyer.food_bought += amount
+                seller.food_sold += amount_food
+                buyer.food_bought += amount_food
                 seller.shell_earned_from_trade += shells
                 buyer.shell_spent_on_food += shells
                 seller.trade_count += 1
                 buyer.trade_count += 1
+                participant_ids.update({seller.id, buyer.id})
                 contexts.setdefault(seller.id, {})["trade_food_sold"] = (
-                    float(contexts.get(seller.id, {}).get("trade_food_sold", 0.0)) + amount
+                    float(contexts.get(seller.id, {}).get("trade_food_sold", 0.0)) + amount_food
                 )
                 contexts.setdefault(buyer.id, {})["trade_food_bought"] = (
-                    float(contexts.get(buyer.id, {}).get("trade_food_bought", 0.0)) + amount
+                    float(contexts.get(buyer.id, {}).get("trade_food_bought", 0.0)) + amount_food
                 )
-                seller_item["food"] = available - amount
-                remaining -= amount
-                food_volume += amount
+                seller_item["remaining_food"] = available - amount_food
+                remaining -= amount_food
+                food_volume += amount_food
                 shell_volume += shells
                 transactions += 1
-                if seller_item["food"] <= 1e-9:
+                if seller_item["remaining_food"] <= 1e-9:
                     seller_index += 1
             if seller_index >= len(sellers):
                 break
@@ -561,11 +734,19 @@ class Simulation:
         record = {
             "tick": tick,
             "food_volume": food_volume,
+            "food_volume_meals": food_volume / max(1e-12, self.params.need_base),
             "shell_volume": shell_volume,
-            "clearing_price": clearing_price if transactions else 0.0,
+            "clearing_price": clearing_price if transactions else None,
+            "normalized_price": clearing_price if transactions else None,
+            "price_anchor": 1.0,
+            "price_rule": self.params.market_price_rule,
+            "buyer_budget_fraction": self.params.buyer_budget_fraction,
             "buyers": len(buyers),
             "sellers": len(sellers),
             "transactions": transactions,
+            "participant_ids": sorted(participant_ids),
+            "unfunded_demand": unfunded_demand,
+            "total_demand_meals": demand / max(1e-12, self.params.need_base),
         }
         self.trade_records.append(record)
         return record
@@ -594,26 +775,45 @@ class Simulation:
             for agent_id, weight in weights.items()
         }
 
+    def _apply_idiosyncratic_allocation_noise(
+        self,
+        allocations: dict[int, float],
+        members: list[AgentState],
+    ) -> dict[int, float]:
+        """Perturb post-allocation individual realizations while preserving the pool."""
+        total_food = sum(max(0.0, allocations.get(agent.id, 0.0)) for agent in members)
+        if self.params.idio_sigma <= 1e-12 or len(members) < 2 or total_food <= 1e-12:
+            return allocations
+        realized = {
+            agent.id: max(0.0, allocations.get(agent.id, 0.0))
+            * math.exp(self.individual_rng.gauss(0.0, self.params.idio_sigma))
+            for agent in members
+        }
+        realized_total = sum(realized.values())
+        if realized_total <= 1e-12:
+            return allocations
+        scale = total_food / realized_total
+        return {agent.id: realized[agent.id] * scale for agent in members}
+
     @staticmethod
-    def _percentile_rank(value: float, values: list[float]) -> float:
-        if len(values) <= 1:
-            return 0.5
-        lower = sum(1 for item in values if item < value)
-        equal = sum(1 for item in values if item == value)
-        return clip((lower + 0.5 * max(0, equal - 1)) / (len(values) - 1), 0.0, 1.0)
+    def _z_scores(values: list[float]) -> list[float]:
+        average = mean(values)
+        spread = stdev(values)
+        if spread <= 1e-12:
+            return [0.0 for _ in values]
+        return [(value - average) / spread for value in values]
 
     def _evaluate_promotions(self, tick: int) -> None:
         if not self.agents or not self.params.rank_enabled:
             return
         shell_values = [agent.shell_balance for agent in self.agents]
         hunt_values = [agent.period_hunting_contribution for agent in self.agents]
+        shell_z = self._z_scores([math.log1p(max(0.0, value)) for value in shell_values])
+        hunt_z = self._z_scores(hunt_values)
         scores = {
-            agent.id: (
-                self.params.promotion_shell_weight * self._percentile_rank(agent.shell_balance, shell_values)
-                + self.params.promotion_hunting_weight
-                * self._percentile_rank(agent.period_hunting_contribution, hunt_values)
-            )
-            for agent in self.agents
+            agent.id: self.params.promotion_shell_weight * shell_z[index]
+            + self.params.promotion_hunting_weight * hunt_z[index]
+            for index, agent in enumerate(self.agents)
         }
         ranked = sorted(
             self.agents,
@@ -622,12 +822,47 @@ class Simulation:
                 agent.shell_balance,
                 agent.period_hunting_contribution,
                 -agent.extreme_triggers,
-                -agent.id,
+                self.promotion_tiebreakers[agent.id],
             ),
             reverse=True,
         )
-        chief_id = ranked[0].id
-        chieftain_ids = [agent.id for agent in ranked[1 : 1 + self.params.chieftain_slots]]
+        minimum_tenure_ticks = self.params.min_tenure_periods * self.params.promotion_period
+        eligible_ids = {
+            agent.id
+            for agent in self.agents
+            if tick - agent.role_since_tick >= minimum_tenure_ticks
+        }
+        chief_is_locked = self.chief_id not in eligible_ids
+        chief_id = (
+            self.chief_id
+            if chief_is_locked
+            else next(agent.id for agent in ranked if agent.id in eligible_ids)
+        )
+        locked_chieftains = [
+            agent_id for agent_id in self.chieftain_ids if agent_id not in eligible_ids
+        ]
+        chieftain_slots_left = max(0, self.params.chieftain_slots - len(locked_chieftains))
+        newly_selected_chieftains = [
+            agent.id
+            for agent in ranked
+            if agent.id != chief_id
+            and agent.id not in locked_chieftains
+            and agent.id in eligible_ids
+        ][:chieftain_slots_left]
+        chieftain_ids = [*locked_chieftains, *newly_selected_chieftains]
+        self.promotion_reviews.append(
+            {
+                "tick": tick,
+                "evaluation_period": tick // self.params.promotion_period,
+                "warmup_period": tick == self.params.burn_in_ticks,
+                "score_mode": "zlog",
+                "min_tenure_periods": self.params.min_tenure_periods,
+                "top_ranked_chief_id": ranked[0].id,
+                "chief_id": chief_id,
+                "chieftain_ids": list(chieftain_ids),
+                "shell_balances_tied_at_review": len(set(shell_values)) == 1,
+            }
+        )
         target_roles = {
             agent.id: (
                 Role.CHIEF
@@ -645,14 +880,19 @@ class Simulation:
         for agent in self.agents:
             new_role = target_roles[agent.id]
             if old_roles[agent.id] is not new_role:
+                agent.role_since_tick = tick + 1
                 event = {
                     "tick": tick,
+                    "effective_from_tick": tick + 1,
+                    "evaluation_period": tick // self.params.promotion_period,
+                    "warmup_period": tick == self.params.burn_in_ticks,
                     "agent_id": agent.id,
                     "old_role": old_roles[agent.id].value,
                     "old_role_label": old_roles[agent.id].label,
                     "new_role": new_role.value,
                     "new_role_label": new_role.label,
                     "shell_balance": agent.shell_balance,
+                    "role_since_tick": agent.role_since_tick,
                     "hunting_contribution": agent.period_hunting_contribution,
                     "promotion_score": scores[agent.id],
                 }
@@ -686,10 +926,27 @@ class Simulation:
                 }
             )
 
-    def _recover_rescued_agents(self) -> None:
+    def _recover_rescued_agents(self) -> dict[int, float]:
+        received: dict[int, float] = {}
         for agent in self.agents:
+            requested = agent.pending_relief
+            if requested > 1e-9:
+                if self.params.relief_source == "external":
+                    delivered = requested
+                    self.external_relief_total += delivered
+                elif self.params.relief_source == "public":
+                    delivered = min(requested, self.public_food_reserve)
+                    self.public_food_reserve -= delivered
+                    self.public_relief_total += delivered
+                else:
+                    delivered = 0.0
+                agent.food_reserve += delivered
+                agent.pending_relief = max(0.0, requested - delivered)
+                received[agent.id] = delivered
             if agent.status is Status.EXTREME_FATIGUE and agent.food_reserve >= agent.need:
                 agent.status = Status.NORMAL
+                agent.pending_relief = 0.0
+        return received
 
     def _decide(
         self,
@@ -1244,16 +1501,23 @@ class Simulation:
 
     def _environment_shock(self) -> float:
         spread = self.params.environment_volatility
-        return self.rng.uniform(1.0 - spread, 1.0 + spread)
+        return self.environment_rng.uniform(1.0 - spread, 1.0 + spread)
+
+    def _resource_multiplier(self) -> float:
+        if self.scenario.target_supply_ratio < 1.0:
+            return self.params.scarcity_resource_multiplier
+        return self.params.abundance_resource_multiplier
 
     def _organized_tick(
         self, tick: int, decisions: dict[int, AgentDecision]
     ) -> tuple[dict[int, float], dict[int, dict[str, float]], dict[str, float]]:
+        resource_multiplier = self._resource_multiplier()
         base_food = (
             len(self.agents)
             * self.scenario.base_resource
             * self.params.food_scale
             * self._environment_shock()
+            * resource_multiplier
         )
         contributions = {
             agent.id: decisions[agent.id].effort * self._agent_ability(agent, ActionMode.ORGANIZED)
@@ -1262,12 +1526,14 @@ class Simulation:
         total_contribution = sum(contributions.values())
         avg_compliance = mean(decisions[agent.id].compliance_action for agent in self.agents)
         team_count = max(1, math.ceil(len(self.agents) / self.params.typical_team_size))
-        continuous_food = (
+        organization_cost = self.params.org_cost_per_team * team_count
+        continuous_food = max(0.0, (
             self.params.alpha
             * total_contribution
             * (1.0 + self.params.lambda_c * self.scenario.collectivization * avg_compliance)
-            - self.params.org_cost_per_team * team_count
-        )
+            * resource_multiplier
+            - organization_cost
+        ))
         team_power = (
             self.params.base_combat_power
             * sum(decisions[a.id].effort * (0.5 + 0.5 * a.physical) for a in self.agents)
@@ -1275,11 +1541,12 @@ class Simulation:
         )
         hunt = self.hunting.resolve_hunt(
             team_power=team_power,
-            rng=self.rng,
+            rng=self.hunting_rng,
             events=team_count,
             encounter_rate=0.85 + 0.15 * self.scenario.base_resource,
         )
-        produced_food = max(0.0, continuous_food) + hunt.meat
+        hunt_food = hunt.meat * resource_multiplier
+        produced_food = continuous_food + hunt_food
         total_food = max(0.0, base_food + produced_food)
         if self.params.rank_enabled and self.params.rank_split_enabled:
             allocations = self._role_weight_allocation(total_food, self.agents)
@@ -1290,6 +1557,7 @@ class Simulation:
                 contributions=contributions,
                 equal_weight=self.params.organized_equal_weight,
             )
+        allocations = self._apply_idiosyncratic_allocation_noise(allocations, self.agents)
         social_gini = gini(list(allocations.values()))
         contexts = {}
         avg_need_share = total_food / max(1, len(self.agents))
@@ -1312,8 +1580,11 @@ class Simulation:
         return allocations, contexts, {
             "base_food": base_food,
             "produced_food": produced_food,
-            "hunt_food": hunt.meat,
+            "hunt_food": hunt_food,
+            "organization_cost": organization_cost,
+            "team_count": float(team_count),
             "total_food": total_food,
+            "target_supply_ratio": self.scenario.target_supply_ratio,
             "avg_compliance": avg_compliance,
             "hunt_success_rate": hunt.success_rate,
         }
@@ -1326,6 +1597,7 @@ class Simulation:
         total_base = 0.0
         total_produced = 0.0
         total_hunt = 0.0
+        total_organization_cost = 0.0
         stability_values: list[float] = []
 
         for group_id, member_ids in sorted(self.groups.items()):
@@ -1333,8 +1605,10 @@ class Simulation:
             if not members:
                 continue
             n = len(members)
+            resource_multiplier = self._resource_multiplier()
             base_food = (
                 n * self.scenario.base_resource * self.params.food_scale * self._environment_shock()
+                * resource_multiplier
             )
             contributions = {
                 agent.id: decisions[agent.id].effort * self._agent_ability(agent, ActionMode.GROUP)
@@ -1351,12 +1625,16 @@ class Simulation:
                 0.0,
                 1.0,
             )
-            continuous_food = (
+            organization_cost = self.params.group_cost_per_team * max(
+                1.0, n / self.params.typical_team_size
+            )
+            continuous_food = max(0.0, (
                 self.params.alpha
                 * total_contribution
                 * (1.0 + self.params.lambda_g * group_coordination)
-                - self.params.group_cost_per_team * max(1.0, n / self.params.typical_team_size)
-            )
+                * resource_multiplier
+                - organization_cost
+            ))
             team_power = (
                 self.params.base_combat_power
                 * sum(decisions[a.id].effort * (0.5 + 0.5 * a.physical) for a in members)
@@ -1364,14 +1642,16 @@ class Simulation:
             )
             hunt = self.hunting.resolve_hunt(
                 team_power=team_power,
-                rng=self.rng,
+                rng=self.hunting_rng,
                 events=max(1, round(n / self.params.typical_team_size)),
                 encounter_rate=0.80 + 0.15 * self.scenario.base_resource,
             )
-            group_food = max(0.0, base_food + max(0.0, continuous_food) + hunt.meat)
+            group_hunt_food = hunt.meat * resource_multiplier
+            group_food = max(0.0, base_food + continuous_food + group_hunt_food)
             total_base += base_food
-            total_produced += max(0.0, continuous_food)
-            total_hunt += hunt.meat
+            total_produced += continuous_food
+            total_hunt += group_hunt_food
+            total_organization_cost += organization_cost
 
             avg_alt = mean(agent.alt_orientation for agent in members)
             avg_restraint = mean(agent.restraint_orientation for agent in members)
@@ -1390,7 +1670,7 @@ class Simulation:
                 )
                 if self.chief_id is not None:
                     allocations[self.chief_id] = allocations.get(self.chief_id, 0.0) + (
-                        leadership_food / max(1, len(self.groups))
+                        leadership_food
                     )
             else:
                 group_allocations = self._need_contribution_allocation(
@@ -1399,6 +1679,10 @@ class Simulation:
                     contributions=contributions,
                     equal_weight=share_norm,
                 )
+            group_allocations = self._apply_idiosyncratic_allocation_noise(
+                group_allocations,
+                members,
+            )
             group_gini = gini(list(group_allocations.values()))
             group_avg_food = mean(group_allocations.values())
             for agent in members:
@@ -1472,7 +1756,10 @@ class Simulation:
             "base_food": total_base,
             "produced_food": total_produced + total_hunt,
             "hunt_food": total_hunt,
+            "organization_cost": total_organization_cost,
+            "team_count": float(len(self.groups)),
             "total_food": total_food,
+            "target_supply_ratio": self.scenario.target_supply_ratio,
             "group_stability": mean(stability_values, 1.0),
             "hunt_success_rate": 0.0,
         }
@@ -1514,12 +1801,18 @@ class Simulation:
         total_base = 0.0
         total_produced = 0.0
         total_hunt = 0.0
+        resource_multiplier = self._resource_multiplier()
         successes = 0
         events = 0
 
         for agent in self.agents:
             decision = decisions[agent.id]
-            base_food = self.scenario.base_resource * self.params.food_scale * self._environment_shock()
+            base_food = (
+                self.scenario.base_resource
+                * self.params.food_scale
+                * self._environment_shock()
+                * resource_multiplier
+            )
             ability = self._agent_ability(agent, ActionMode.INDIVIDUAL)
             risk_mean = (
                 1.0
@@ -1533,8 +1826,11 @@ class Simulation:
                 + 0.14 * self.scenario.scarcity_pressure
                 - 0.08 * agent.restraint_orientation
             )
-            risk_return = max(0.0, self.rng.gauss(risk_mean, max(0.03, risk_sd)))
-            continuous_food = self.params.alpha_individual * decision.effort * ability * risk_return
+            risk_return = max(0.0, self.individual_rng.gauss(risk_mean, max(0.03, risk_sd)))
+            continuous_food = (
+                self.params.alpha_individual * decision.effort * ability * risk_return
+                * resource_multiplier
+            )
             encounter_rate = clip(0.15 + 0.70 * decision.effort + 0.10 * agent.exploration, 0.0, 0.95)
             team_power = (
                 self.params.base_combat_power
@@ -1544,7 +1840,7 @@ class Simulation:
             )
             hunt = self.hunting.resolve_hunt(
                 team_power=team_power,
-                rng=self.rng,
+                rng=self.hunting_rng,
                 events=1,
                 encounter_rate=encounter_rate,
             )
@@ -1552,15 +1848,16 @@ class Simulation:
             successes += hunt.successes
             total_base += base_food
             total_produced += continuous_food
-            total_hunt += hunt.meat
-            raw_food[agent.id] = max(0.0, base_food + continuous_food + hunt.meat)
+            scaled_hunt_food = hunt.meat * resource_multiplier
+            total_hunt += scaled_hunt_food
+            raw_food[agent.id] = max(0.0, base_food + continuous_food + scaled_hunt_food)
             contexts[agent.id] = {
                 "fairness": 0.42,
                 "autonomy": 0.90 + 0.08 * self.scenario.individualization,
                 "social_belonging": 0.24 + 0.10 * agent.alt_orientation,
                 "contribution_signal": clip(decision.effort * ability / 0.75, 0.0, 1.0),
                 "hunt_failed": decision.effort > 0.05 and hunt.successes == 0 and continuous_food < agent.need * 0.25,
-                "hunting_contribution": max(0.0, continuous_food + hunt.meat),
+                "hunting_contribution": max(0.0, continuous_food + scaled_hunt_food),
             }
 
         allocations = dict(raw_food)
@@ -1612,7 +1909,10 @@ class Simulation:
             "base_food": total_base,
             "produced_food": total_produced + total_hunt,
             "hunt_food": total_hunt,
+            "organization_cost": 0.0,
+            "team_count": float(len(self.agents)),
             "total_food": sum(allocations.values()),
+            "target_supply_ratio": self.scenario.target_supply_ratio,
             "hunt_success_rate": successes / max(1, events),
         }
 
@@ -1647,7 +1947,7 @@ class Simulation:
         if not self.groups:
             ordered = sorted(
                 self.agents,
-                key=lambda agent: (agent.moral_type.value, self.rng.random()),
+                key=lambda agent: (agent.moral_type.value, self.group_rng.random()),
             )
             self.groups = {group_id: [] for group_id in range(group_count)}
             for idx, agent in enumerate(ordered):
@@ -1663,7 +1963,7 @@ class Simulation:
         new_groups = {group_id: [] for group_id in range(group_count)}
         memories = self._normalized_group_memory(group_count)
         agents = list(self.agents)
-        self.rng.shuffle(agents)
+        self.group_rng.shuffle(agents)
         for agent in agents:
             weights = GROUP_CHOICE_WEIGHTS[agent.moral_type]
             best_group = None
@@ -1680,7 +1980,7 @@ class Simulation:
                     + weights["similarity"] * similarity
                     + weights["stability"] * memory["stability"]
                     + self.params.relationship_memory_weight * prior_relation
-                    + self.rng.uniform(-0.02, 0.02)
+                    + self.group_rng.uniform(-0.02, 0.02)
                 )
                 if score > best_score:
                     best_score = score
@@ -1760,6 +2060,9 @@ class Simulation:
         decision: AgentDecision,
         context: dict[str, float],
         allocated: float,
+        food_consumed: float,
+        unmet_food: float,
+        relief_received: float,
         effective_need: float,
         reserve_before: float,
         fatigue_before: float,
@@ -1786,7 +2089,8 @@ class Simulation:
         message = (
             f"{self.scenario.id} 第 {tick} 轮 Agent {agent.id}({agent.moral_type.label})"
             f"{group_text}: {action}; 努力 {decision.effort:.2f}, "
-            f"分得肉量 {allocated:.2f}/{effective_need:.2f}, "
+            f"分得 {allocated:.2f}, 实际消费 {food_consumed:.2f}/{effective_need:.2f}, "
+            f"缺口 {unmet_food:.2f}, 救济 {relief_received:.2f}, "
             f"储备 {reserve_before:.2f}->{agent.food_reserve:.2f}, "
             f"疲劳 {fatigue_before:.2f}->{agent.fatigue:.2f}, "
             f"幸福 {wellbeing_before:.1f}->{agent.wellbeing:.1f}, "
@@ -1815,6 +2119,9 @@ class Simulation:
             "decision_source": decision.decision_source,
             "decision_reason": decision.decision_reason,
             "allocated_food": round(allocated, 4),
+            "food_consumed": round(food_consumed, 4),
+            "unmet_food": round(unmet_food, 4),
+            "relief_received": round(relief_received, 4),
             "effective_need": round(effective_need, 4),
             "food_reserve_before": round(reserve_before, 4),
             "food_reserve_after": round(agent.food_reserve, 4),
@@ -1902,7 +2209,16 @@ class Simulation:
         production: dict[str, float],
         allocations: dict[int, float],
         survival_rate: float,
-        trade: dict[str, float | int],
+        trade: dict[str, float | int | None],
+        *,
+        food_opening_stock: float,
+        food_closing_stock: float,
+        consumed: float,
+        unmet: float,
+        external_relief: float,
+        public_relief: float,
+        food_loss: float,
+        food_ledger_error: float,
     ) -> dict[str, Any]:
         by_moral = {}
         for moral_type in MoralType:
@@ -1930,9 +2246,22 @@ class Simulation:
             "produced_food": production["produced_food"],
             "hunt_food": production.get("hunt_food", 0.0),
             "total_food": production["total_food"],
+            "food_consumed": consumed,
+            "unmet_food": unmet,
+            "food_opening_stock": food_opening_stock,
+            "food_closing_stock": food_closing_stock,
+            "external_relief": external_relief,
+            "public_relief": public_relief,
+            "public_food_reserve": self.public_food_reserve,
+            "food_loss": food_loss,
+            "food_ledger_error": food_ledger_error,
+            "realized_supply_ratio": production["total_food"]
+            / max(1e-9, sum(agent.need for agent in self.agents)),
             "trade_food": float(trade.get("food_volume", 0.0)),
             "trade_shells": float(trade.get("shell_volume", 0.0)),
-            "market_price": float(trade.get("clearing_price", 0.0)),
+            "market_price": trade.get("clearing_price"),
+            "normalized_market_price": trade.get("normalized_price"),
+            "unfunded_demand": float(trade.get("unfunded_demand", 0.0)),
             "avg_shell_balance": mean(agent.shell_balance for agent in self.agents),
             "shell_gini_index": gini([agent.shell_balance for agent in self.agents]),
             "by_moral_type": by_moral,
@@ -1948,23 +2277,68 @@ class Simulation:
             total_ticks=self.params.ticks,
             total_food_by_tick=self.total_food_by_tick,
             survival_rates=self.survival_rates,
+            burn_in_ticks=self.params.burn_in_ticks,
         )
-        trade_metrics = summarize_trade_metrics(agents=self.agents, trade_records=self.trade_records)
+        trade_metrics = summarize_trade_metrics(
+            agents=self.agents,
+            trade_records=self.trade_records,
+            burn_in_ticks=self.params.burn_in_ticks,
+        )
+        final_food_inventory = self.public_food_reserve + sum(
+            agent.food_reserve for agent in self.agents
+        )
+        initial_food_inventory = self.initial_public_food_reserve
+        total_production = sum(self.total_food_by_tick)
+        food_balance_error = (
+            initial_food_inventory
+            + total_production
+            + self.external_relief_total
+            - self.total_food_consumed
+            - self.total_food_loss
+            - final_food_inventory
+        )
+        initial_shell_total = self.initial_shell_total
+        final_shell_total = sum(agent.shell_balance for agent in self.agents)
+        shell_balance_error = final_shell_total - initial_shell_total
+        max_tick_ledger_error = max(
+            (abs(float(record["ledger_error"])) for record in self.food_ledger_records),
+            default=0.0,
+        )
+        if abs(food_balance_error) > 1e-6 or max_tick_ledger_error > 1e-6:
+            raise RuntimeError(
+                "Food inventory ledger failed conservation check: "
+                f"final error={food_balance_error:.3g}, max tick error={max_tick_ledger_error:.3g}"
+            )
+        if abs(shell_balance_error) > 1e-6:
+            raise RuntimeError(
+                f"Shell ledger failed conservation check: error={shell_balance_error:.3g}"
+            )
         society.update(
             {
                 "avg_shell_balance": trade_metrics["avg_shell_balance"],
                 "shell_gini_index": trade_metrics["shell_gini_index"],
                 "total_trade_volume_food": trade_metrics["total_trade_volume_food"],
+                "total_trade_volume_meals": trade_metrics["total_trade_volume_meals"],
                 "total_trade_volume_shells": trade_metrics["total_trade_volume_shells"],
                 "trade_participation_rate": trade_metrics["trade_participation_rate"],
+                "unfunded_demand_meals": trade_metrics["unfunded_demand_meals"],
             }
+        )
+        role_metrics = summarize_role_metrics(
+            self.agents,
+            self.params.ticks,
+            self.params.burn_in_ticks,
         )
         result = {
             "scenario": self.scenario.to_dict(),
             "parameters": self.params.to_dict(),
             "model_status": self.model_status,
             "society_metrics": society,
-            "moral_type_metrics": summarize_by_moral_type(self.agents, self.params.ticks),
+            "moral_type_metrics": summarize_by_moral_type(
+                self.agents,
+                self.params.ticks,
+                self.params.burn_in_ticks,
+            ),
             "group_metrics": aggregate_group_metrics(self.group_records),
             "time_series": self.time_series,
             "system_logs": self.system_logs,
@@ -1972,9 +2346,59 @@ class Simulation:
             "final_agents": [agent.to_snapshot() for agent in self.agents],
             "group_records": self.group_records[-200:],
             "trade_metrics": trade_metrics,
-            "role_metrics": summarize_role_metrics(self.agents),
+            "role_metrics": role_metrics,
+            "hierarchy_metrics": self._hierarchy_metrics(role_metrics),
             "trade_records": self.trade_records[-200:],
             "promotion_events": self.promotion_events[-200:],
+            "promotion_reviews": self.promotion_reviews[-100:],
+            "food_accounting": {
+                "initial_public_food_reserve": self.initial_public_food_reserve,
+                "final_public_food_reserve": self.public_food_reserve,
+                "external_relief_total": self.external_relief_total,
+                "public_relief_total": self.public_relief_total,
+                "total_production": total_production,
+                "total_consumed": self.total_food_consumed,
+                "total_loss": self.total_food_loss,
+                "final_inventory": final_food_inventory,
+                "balance_error": food_balance_error,
+                "max_abs_tick_error": max_tick_ledger_error,
+                "relief_source": self.params.relief_source,
+            },
+            "shell_accounting": {
+                "initial_shell_total": initial_shell_total,
+                "final_shell_total": final_shell_total,
+                "balance_error": shell_balance_error,
+            },
+            "feasibility_checks": {
+                "food_ledger_conserved": abs(food_balance_error) <= 1e-6,
+                "shell_ledger_conserved": abs(shell_balance_error) <= 1e-6,
+                "abundance_extreme_fatigue_below_50pct": (
+                    society["extreme_fatigue_rate"] < 0.5
+                )
+                if self.scenario.target_supply_ratio > 1.0
+                else None,
+                "market_effective": (
+                    bool(trade_metrics["market_effective"])
+                    if self.params.trade_enabled
+                    else None
+                ),
+            },
+            "experiment_protocol": {
+                "ticks": self.params.ticks,
+                "replications": self.params.replications,
+                "seed_base": self.params.seed,
+                "replication_seed_step": 100_003,
+                "scenario_seed_offset_step": 100_000,
+                "scenario_seed": self.scenario_seed,
+                "paired_exogenous_streams": True,
+                "promotion_period": self.params.promotion_period,
+                "burn_in_ticks": self.params.burn_in_ticks,
+                "analysis_ticks": max(0, self.params.ticks - self.params.burn_in_ticks),
+                "initial_shells_distribution": self.params.initial_shells_distribution,
+                "market_price_rule": self.params.market_price_rule,
+                "idio_sigma": self.params.idio_sigma,
+                "detailed_agent_logs_retained": self.collect_agent_logs,
+            },
             "hierarchy": {
                 "chief_id": self.chief_id,
                 "chieftain_ids": list(self.chieftain_ids),
@@ -1988,6 +2412,57 @@ class Simulation:
         }
         self._assert_numeric_result(result)
         return result
+
+    def _hierarchy_metrics(self, role_metrics: dict[str, dict[str, float | str]]) -> dict[str, float]:
+        reviews = [
+            review
+            for review in self.promotion_reviews
+            if int(review.get("tick", 0)) >= self.params.burn_in_ticks
+        ]
+        role_rank = {Role.HUNTER.value: 0, Role.CHIEFTAIN.value: 1, Role.CHIEF.value: 2}
+        events = [
+            event
+            for event in self.promotion_events
+            if int(event.get("tick", 0)) >= self.params.burn_in_ticks
+        ]
+        transitions = max(1, len(reviews) - 1)
+        chief_retained = sum(
+            1
+            for previous, current in zip(reviews, reviews[1:], strict=False)
+            if previous.get("chief_id") == current.get("chief_id")
+        )
+        chieftain_retained = sum(
+            len(set(previous.get("chieftain_ids", [])) & set(current.get("chieftain_ids", [])))
+            / max(1, self.params.chieftain_slots)
+            for previous, current in zip(reviews, reviews[1:], strict=False)
+        )
+        upward = sum(
+            1
+            for event in events
+            if role_rank[str(event["new_role"])] > role_rank[str(event["old_role"])]
+        )
+        downward = sum(
+            1
+            for event in events
+            if role_rank[str(event["new_role"])] < role_rank[str(event["old_role"])]
+        )
+        role_shells = [
+            float(role_metrics[role.value]["avg_shell_balance"])
+            for role in Role
+        ]
+        role_food = [
+            float(role_metrics[role.value]["avg_food_allocated"])
+            for role in Role
+        ]
+        return {
+            "promotion_rate": len(events) / max(1, len(self.agents) * max(1, len(reviews))),
+            "chief_retention_rate": chief_retained / transitions,
+            "chieftain_retention_rate": chieftain_retained / transitions,
+            "upward_mobility_rate": upward / max(1, len(self.agents) * max(1, len(reviews))),
+            "downward_mobility_rate": downward / max(1, len(self.agents) * max(1, len(reviews))),
+            "role_hierarchy_shell_gini": gini(role_shells),
+            "role_hierarchy_food_gini": gini(role_food),
+        }
 
     def _assert_numeric_result(self, value: Any, path: str = "result") -> None:
         if isinstance(value, dict):
@@ -2013,8 +2488,13 @@ def run_batch(
         else SimulationParameters.from_dict(parameters)
     )
     ids = scenario_ids or list(SCENARIOS)
-    if params.replications > 1 and event_callback is None:
-        return _run_replicated_batch(ids, params, stop_checker=stop_checker)
+    if params.replications > 1:
+        return _run_replicated_batch(
+            ids,
+            params,
+            event_callback=event_callback,
+            stop_checker=stop_checker,
+        )
     if event_callback is not None:
         event_callback(
             {
@@ -2029,7 +2509,13 @@ def run_batch(
         if stop_checker is not None and stop_checker():
             raise RuntimeError("simulation stopped by user")
         if event_callback is not None:
-            event_callback({"type": "scenario_start", "scenario": SCENARIOS[scenario_id].to_dict()})
+            event_callback(
+                {
+                    "type": "scenario_start",
+                    "scenario": SCENARIOS[scenario_id].to_dict(),
+                    "scenario_seed": params.seed + int(scenario_id[1:]) * 100_000,
+                }
+            )
         simulation = Simulation(
             scenario_id,
             params,
@@ -2057,9 +2543,19 @@ def _run_replicated_batch(
     ids: list[str],
     params: SimulationParameters,
     *,
+    event_callback: StreamCallback | None = None,
     stop_checker: StopChecker | None = None,
 ) -> dict[str, Any]:
     by_scenario: dict[str, list[dict[str, Any]]] = {scenario_id: [] for scenario_id in ids}
+    if event_callback is not None:
+        event_callback(
+            {
+                "type": "batch_start",
+                "parameters": params.to_dict(),
+                "scenarios": [SCENARIOS[scenario_id].to_dict() for scenario_id in ids],
+                "model_status": provider_status(params.llm_provider).to_dict(),
+            }
+        )
     for replication in range(params.replications):
         rep_params = SimulationParameters.from_dict(params.to_dict())
         rep_params.replications = 1
@@ -2067,7 +2563,36 @@ def _run_replicated_batch(
         for scenario_id in ids:
             if stop_checker is not None and stop_checker():
                 raise RuntimeError("simulation stopped by user")
-            simulation = Simulation(scenario_id, rep_params, stop_checker=stop_checker)
+            if event_callback is not None:
+                event_callback(
+                    {
+                        "type": "scenario_start",
+                        "scenario": SCENARIOS[scenario_id].to_dict(),
+                        "replication": replication + 1,
+                        "seed": rep_params.seed,
+                        "scenario_seed": rep_params.seed + int(scenario_id[1:]) * 100_000,
+                    }
+                )
+
+            def emit_replication_event(event: dict[str, Any]) -> None:
+                if event_callback is None:
+                    return
+                event_callback(
+                    {
+                        **event,
+                        "replication": replication + 1,
+                        "seed": rep_params.seed,
+                        "scenario_seed": rep_params.seed + int(scenario_id[1:]) * 100_000,
+                    }
+                )
+
+            simulation = Simulation(
+                scenario_id,
+                rep_params,
+                event_callback=emit_replication_event if event_callback is not None else None,
+                stop_checker=stop_checker,
+                collect_agent_logs=False,
+            )
             scenario_result = simulation.run()
             scenario_result["replication"] = replication + 1
             scenario_result["seed"] = rep_params.seed
@@ -2078,7 +2603,7 @@ def _run_replicated_batch(
         for scenario_id, scenario_results in by_scenario.items()
     ]
     comparison = _comparison(results)
-    return {
+    result = {
         "parameters": params.to_dict(),
         "scenarios": [SCENARIOS[scenario_id].to_dict() for scenario_id in ids],
         "results": results,
@@ -2087,6 +2612,9 @@ def _run_replicated_batch(
         "replication_count": params.replications,
         "hypothesis_checks": _hypothesis_checks(comparison),
     }
+    if event_callback is not None:
+        event_callback({"type": "complete", "result": result})
+    return result
 
 
 def _aggregate_replicate_results(
@@ -2095,7 +2623,37 @@ def _aggregate_replicate_results(
     params: SimulationParameters,
 ) -> dict[str, Any]:
     first = scenario_results[0]
-    return {
+    abundance_checks = [
+        bool(result["feasibility_checks"]["abundance_extreme_fatigue_below_50pct"])
+        for result in scenario_results
+        if result.get("feasibility_checks", {}).get(
+            "abundance_extreme_fatigue_below_50pct"
+        ) is not None
+    ]
+    market_checks = [
+        bool(result["feasibility_checks"]["market_effective"])
+        for result in scenario_results
+        if result.get("feasibility_checks", {}).get("market_effective") is not None
+    ]
+    food_accounting = _mean_metric_dict(
+        [result.get("food_accounting", {}) for result in scenario_results]
+    )
+    food_accounting["max_abs_tick_error"] = max(
+        float(result.get("food_accounting", {}).get("max_abs_tick_error", 0.0))
+        for result in scenario_results
+    )
+    food_accounting["max_abs_balance_error"] = max(
+        abs(float(result.get("food_accounting", {}).get("balance_error", 0.0)))
+        for result in scenario_results
+    )
+    shell_accounting = _mean_metric_dict(
+        [result.get("shell_accounting", {}) for result in scenario_results]
+    )
+    shell_accounting["max_abs_balance_error"] = max(
+        abs(float(result.get("shell_accounting", {}).get("balance_error", 0.0)))
+        for result in scenario_results
+    )
+    result = {
         "scenario": SCENARIOS[scenario_id].to_dict(),
         "parameters": params.to_dict(),
         "model_status": first["model_status"],
@@ -2106,6 +2664,28 @@ def _aggregate_replicate_results(
         "group_metrics": _mean_metric_dict([result["group_metrics"] for result in scenario_results]),
         "trade_metrics": _mean_metric_dict([result.get("trade_metrics", {}) for result in scenario_results]),
         "role_metrics": _mean_nested_metric_dict([result.get("role_metrics", {}) for result in scenario_results]),
+        "hierarchy_metrics": _mean_metric_dict(
+            [result.get("hierarchy_metrics", {}) for result in scenario_results]
+        ),
+        "food_accounting": food_accounting,
+        "shell_accounting": shell_accounting,
+        "feasibility_checks": {
+            "food_ledger_conserved": all(
+                result.get("feasibility_checks", {}).get("food_ledger_conserved", False)
+                for result in scenario_results
+            ),
+            "shell_ledger_conserved": all(
+                result.get("feasibility_checks", {}).get("shell_ledger_conserved", False)
+                for result in scenario_results
+            ),
+            "abundance_extreme_fatigue_pass_rate": (
+                mean(float(value) for value in abundance_checks) if abundance_checks else None
+            ),
+            "market_effective_pass_rate": (
+                mean(float(value) for value in market_checks) if market_checks else None
+            ),
+        },
+        "experiment_protocol": first.get("experiment_protocol", {}),
         "time_series": _mean_time_series([result["time_series"] for result in scenario_results]),
         "system_logs": first["system_logs"][:200],
         "agent_logs": first["agent_logs"][:300],
@@ -2113,6 +2693,7 @@ def _aggregate_replicate_results(
         "group_records": first["group_records"],
         "trade_records": first.get("trade_records", []),
         "promotion_events": first.get("promotion_events", []),
+        "promotion_reviews": first.get("promotion_reviews", []),
         "hierarchy": first.get("hierarchy", {}),
         "replication_count": len(scenario_results),
         "replicate_summaries": [
@@ -2121,10 +2702,14 @@ def _aggregate_replicate_results(
                 "seed": result.get("seed"),
                 "society_metrics": result["society_metrics"],
                 "moral_type_metrics": result["moral_type_metrics"],
+                "food_accounting": result.get("food_accounting", {}),
+                "shell_accounting": result.get("shell_accounting", {}),
+                "feasibility_checks": result.get("feasibility_checks", {}),
             }
             for index, result in enumerate(scenario_results)
         ],
     }
+    return result
 
 
 def _mean_metric_dict(items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2135,8 +2720,10 @@ def _mean_metric_dict(items: list[dict[str, Any]]) -> dict[str, Any]:
     for key in keys:
         values = [item.get(key) for item in items if key in item]
         numeric = [float(value) for value in values if isinstance(value, (int, float))]
-        if numeric and len(numeric) == len(values):
+        if numeric:
             result[key] = mean(numeric)
+        elif all(value is None for value in values):
+            result[key] = None
         elif values:
             result[key] = values[0]
     return result
@@ -2179,6 +2766,9 @@ def _comparison(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "scenario_name": scenario["name"],
                 "mode": scenario["mode"],
                 "avg_food_allocated": society["avg_food_allocated"],
+                "avg_food_consumed": society["avg_food_consumed"],
+                "avg_unmet_food": society["avg_unmet_food"],
+                "realized_supply_ratio": society["realized_supply_ratio"],
                 "avg_wellbeing": society["avg_wellbeing"],
                 "social_gini_index": society["social_gini_index"],
                 "minimum_survival_rate": society["minimum_survival_rate"],
@@ -2186,6 +2776,7 @@ def _comparison(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "avg_shell_balance": society.get("avg_shell_balance", 0.0),
                 "shell_gini_index": society.get("shell_gini_index", 0.0),
                 "total_trade_volume_food": society.get("total_trade_volume_food", 0.0),
+                "total_trade_volume_meals": society.get("total_trade_volume_meals", 0.0),
                 "trade_participation_rate": society.get("trade_participation_rate", 0.0),
                 "moral_type_metrics": result["moral_type_metrics"],
                 "group_metrics": result.get("group_metrics", {}),

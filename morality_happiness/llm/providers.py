@@ -24,17 +24,17 @@ LLM_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
     },
     {
         "id": "openai",
-        "label": "OpenAI",
-        "model": "gpt-4o-mini",
-        "base_url": "",
-        "description": "Camel-AI + OpenAI 官方接口，默认读取 OPENAI_API_KEY。",
+        "label": "NO.1 API（OpenAI兼容）",
+        "model": "gpt-4o",
+        "base_url": "https://api.rcouyi.com/v1",
+        "description": "NO.1 API OpenAI-compatible 接口；API Key 使用该站令牌。",
     },
     {
         "id": "deepseek",
-        "label": "DeepSeek-V4-flash",
-        "model": "deepseek-v4-flash",
+        "label": "DeepSeek-V4.1-Flash-1017",
+        "model": "deepseek-flash",
         "base_url": "https://api.deepseek.com/v1",
-        "description": "OpenAI-Compatible direct-json + DeepSeek-V4-flash 行为决策接口。",
+        "description": "界面名称 DeepSeek-V4.1-Flash-1017；API 调用 ID 为 deepseek-flash。OpenAI-Compatible direct-json 行为决策接口。",
     },
     {
         "id": "local-deepseek",
@@ -116,9 +116,11 @@ class LLMProviderConfig:
         if provider == "openai":
             return cls(
                 provider=provider,
-                model=str(env_override("OPENAI_MODEL", settings.get("model", "gpt-4o-mini"))),
+                model=str(env_override("OPENAI_MODEL", settings.get("model", "gpt-4o"))),
                 api_key=str(env_override("OPENAI_API_KEY", settings.get("api_key", "replace-me"))),
-                base_url=_normalize_chat_base_url(str(env_override("OPENAI_BASE_URL", settings.get("base_url", "")))),
+                base_url=_normalize_chat_base_url(
+                    str(env_override("OPENAI_BASE_URL", settings.get("base_url", "https://api.rcouyi.com/v1")))
+                ),
                 temperature=float(settings.get("temperature", 0.2)),
                 timeout_seconds=int(settings.get("timeout_seconds", 60)),
                 max_tokens=int(settings.get("max_tokens", 256)),
@@ -131,7 +133,7 @@ class LLMProviderConfig:
         if provider == "deepseek":
             return cls(
                 provider=provider,
-                model=str(env_override("DEEPSEEK_MODEL", settings.get("model", "deepseek-v4-flash"))),
+                model=str(env_override("DEEPSEEK_MODEL", settings.get("model", "deepseek-flash"))),
                 api_key=str(env_override("DEEPSEEK_API_KEY", settings.get("api_key", "replace-me"))),
                 base_url=str(
                     env_override("DEEPSEEK_BASE_URL", settings.get("base_url", "https://api.deepseek.com/v1"))
@@ -286,11 +288,11 @@ class RuleProvider:
 
 
 class DirectJSONProvider:
-    """OpenAI-compatible JSON-only adapter used when Camel overhead is undesirable."""
+    """Stateless direct API adapter; reuse clients without retaining agent conversations."""
 
     def __init__(self, config: LLMProviderConfig) -> None:
-        if not config.api_key or not config.base_url:
-            raise RuntimeError(f"{config.provider} direct JSON provider requires api_key and base_url.")
+        if config.api_key in {"", "replace-me", "这里是API"}:
+            raise RuntimeError(f"{config.provider} direct JSON provider requires a configured api_key.")
         self.config = config
         try:
             from openai import OpenAI
@@ -319,8 +321,11 @@ class DirectJSONProvider:
     def _candidate_base_urls(self) -> list[str]:
         seen = set()
         urls: list[str] = []
-        for raw_url in [self.config.base_url, *self.config.fallback_base_urls]:
-            base_url = str(raw_url or "").strip().rstrip("/")
+        primary = self.config.base_url or ("https://api.openai.com/v1" if self.config.provider == "openai" else "")
+        if not primary:
+            raise RuntimeError("A base_url is required for this provider.")
+        for raw_url in [primary, *self.config.fallback_base_urls]:
+            base_url = _normalize_chat_base_url(raw_url)
             if base_url and base_url not in seen:
                 seen.add(base_url)
                 urls.append(base_url)
@@ -347,8 +352,13 @@ class DirectJSONProvider:
             "max_tokens": max(int(self.config.max_tokens or 256), min_tokens),
             "response_format": {"type": "json_object"},
         }
+        if self.config.response_mode == "instruct":
+            request_kwargs.pop("response_format", None)
+        extra_body = _openai_extra_body(self.config)
         if self.config.provider == "deepseek":
-            request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            extra_body["thinking"] = {"type": "disabled"}
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
         last_error: Exception | None = None
         for index, (base_url, client) in enumerate(list(self.clients)):
             stage = f"direct-json:{urllib.parse.urlparse(base_url).netloc or base_url}"
@@ -398,178 +408,6 @@ class DirectJSONProvider:
                 continue
             raise last_error
         raise RuntimeError(str(last_error or "No OpenAI-compatible route configured."))
-
-
-class CamelProvider:
-    """Thin CAMEL-AI adapter with graceful fallback when camel-ai is not installed."""
-
-    def __init__(self, config: LLMProviderConfig) -> None:
-        self.config = config
-        self.system_message = (
-            "You are a wellbeing evaluator for a computational social science "
-            "multi-agent simulation. Return compact JSON only."
-        )
-        try:
-            from camel.agents import ChatAgent
-            from camel.models import ModelFactory
-            from camel.types import ModelPlatformType
-        except Exception as exc:  # pragma: no cover - depends on optional package
-            raise RuntimeError(
-                "camel-ai is not installed. Run `./setup.sh` "
-                "or keep llm_provider='rule'."
-            ) from exc
-
-        platform = self._platform(ModelPlatformType, config)
-        model_config_dict: dict[str, Any] = {"temperature": config.temperature, "max_tokens": config.max_tokens}
-        extra_body = _openai_extra_body(config)
-        if extra_body:
-            model_config_dict["extra_body"] = extra_body
-
-        kwargs = {
-            "model_platform": platform,
-            "model_type": config.model,
-            "model_config_dict": model_config_dict,
-        }
-        if config.base_url:
-            kwargs["url"] = config.base_url
-        if config.api_key:
-            kwargs["api_key"] = config.api_key
-        if config.timeout_seconds:
-            kwargs["timeout"] = float(config.timeout_seconds)
-        kwargs["max_retries"] = max(0, int(config.max_retries))
-        model = ModelFactory.create(**kwargs)
-        self.agent = ChatAgent(
-            system_message=self.system_message,
-            model=model,
-        )
-
-    @staticmethod
-    def _platform(model_platform_type: object, config: LLMProviderConfig) -> object:
-        provider = config.provider.lower()
-        if provider == "openai" and not config.base_url:
-            return getattr(model_platform_type, "OPENAI")
-        if provider == "deepseek" and hasattr(model_platform_type, "DEEPSEEK"):
-            return getattr(model_platform_type, "DEEPSEEK")
-        if provider == "qwen3" and not config.base_url and hasattr(model_platform_type, "QWEN"):
-            return getattr(model_platform_type, "QWEN")
-        return getattr(
-            model_platform_type,
-            "OPENAI_COMPATIBLE_MODEL",
-            getattr(model_platform_type, "OPENAI_COMPATIBILITY_MODEL", None),
-        )
-
-    def complete(self, prompt: str) -> str:  # pragma: no cover - requires external API
-        response = None
-        camel_error: Exception | None = None
-        try:
-            response = self.agent.step(prompt)
-            if hasattr(response, "msg") and hasattr(response.msg, "content"):
-                content = str(response.msg.content or "").strip()
-                if content:
-                    append_llm_trace(
-                        provider=self.config.provider,
-                        model=self.config.model,
-                        stage="camel",
-                        prompt=prompt,
-                        response=content,
-                        ok=True,
-                    )
-                    return content
-            if hasattr(response, "msgs") and response.msgs:
-                content = str(response.msgs[0].content or "").strip()
-                if content:
-                    append_llm_trace(
-                        provider=self.config.provider,
-                        model=self.config.model,
-                        stage="camel",
-                        prompt=prompt,
-                        response=content,
-                        ok=True,
-                    )
-                    return content
-        except Exception as exc:
-            camel_error = exc
-
-        if self._supports_direct_json_fallback():
-            return self._direct_json_complete(prompt)
-
-        if camel_error is not None:
-            append_llm_trace(
-                provider=self.config.provider,
-                model=self.config.model,
-                stage="camel",
-                prompt=prompt,
-                response="",
-                ok=False,
-                error=str(camel_error),
-            )
-            raise camel_error
-        output = str(response)
-        append_llm_trace(
-            provider=self.config.provider,
-            model=self.config.model,
-            stage="camel",
-            prompt=prompt,
-            response=output,
-            ok=bool(output.strip()),
-            error="" if output.strip() else "empty response",
-        )
-        return output
-
-    def _supports_direct_json_fallback(self) -> bool:
-        return self.config.provider in {"openai", "qwen-bailian"} and bool(
-            self.config.api_key and self.config.base_url
-        )
-
-    def _direct_json_complete(self, prompt: str) -> str:
-        try:
-            from openai import OpenAI
-        except Exception as exc:  # pragma: no cover - depends on optional package
-            raise RuntimeError("openai package is required for direct JSON fallback.") from exc
-
-        client = OpenAI(
-            api_key=self.config.api_key,
-            base_url=self.config.base_url,
-            timeout=float(self.config.timeout_seconds or 30),
-            max_retries=max(0, int(self.config.max_retries)),
-        )
-        request_kwargs: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": [
-                {"role": "system", "content": self.system_message + " Return exactly one JSON object."},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": self.config.temperature,
-            "max_tokens": max(int(self.config.max_tokens or 256), 1024),
-            "response_format": {"type": "json_object"},
-        }
-        if self.config.provider == "deepseek":
-            request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-        response = client.chat.completions.create(**request_kwargs)
-        message = response.choices[0].message
-        content = str(message.content or "").strip()
-        if content:
-            append_llm_trace(
-                provider=self.config.provider,
-                model=self.config.model,
-                stage="direct-json-fallback",
-                prompt=prompt,
-                response=content,
-                ok=True,
-            )
-            return content
-        reasoning = getattr(message, "reasoning_content", None)
-        error = f"模型未返回最终JSON内容。reasoning={str(reasoning)[:240] if reasoning else ''}"
-        append_llm_trace(
-            provider=self.config.provider,
-            model=self.config.model,
-            stage="direct-json-fallback",
-            prompt=prompt,
-            response=str(reasoning or ""),
-            ok=False,
-            error=error,
-        )
-        raise RuntimeError(error)
 
 
 class OllamaProvider:
@@ -695,7 +533,7 @@ def build_llm_provider(config: LLMProviderConfig | None = None, *, allow_fallbac
                 raise
             return RuleProvider()
     try:
-        return CamelProvider(config)
+        return DirectJSONProvider(config)
     except Exception:
         if not allow_fallback:
             raise
@@ -719,7 +557,7 @@ def provider_status(provider: str) -> LLMProviderStatus:
     config = LLMProviderConfig.from_config(provider)
     if config.provider == "rule":
         return LLMProviderStatus(
-            framework="camel-ai",
+            framework="native",
             provider="rule",
             model="deterministic-wellbeing-engine",
             base_url="",
@@ -743,63 +581,30 @@ def provider_status(provider: str) -> LLMProviderStatus:
                 else f"Ollama 原生 /api/chat 已配置，将调用 {base_url}/api/chat。"
             ),
         )
-    if config.provider in {"deepseek", "local-deepseek"}:
-        missing_key = config.api_key in {"", "replace-me", "这里是API"}
-        provider_label = "DeepSeek" if config.provider == "deepseek" else "本地DeepSeek"
-        mode_note = ""
-        if config.provider == "local-deepseek":
-            thinking = config.chat_template_kwargs.get("thinking")
-            fallback_note = f", fallback={len(config.fallback_base_urls)}" if config.fallback_base_urls else ""
-            route_timeout = config.route_timeout_seconds or config.timeout_seconds
-            mode_note = (
-                f"；response_mode={config.response_mode}, thinking={thinking}, "
-                f"route_timeout={route_timeout}s{fallback_note}"
-            )
-        return LLMProviderStatus(
-            framework="openai-compatible",
-            provider=config.provider,
-            model=config.model,
-            base_url=config.base_url,
-            active=not missing_key,
-            using_fallback=missing_key,
-            reason=(
-                f"{provider_label} direct-json provider 已配置，但当前使用缺省 API key；模型行为驱动不可用。"
-                if missing_key
-                else f"{provider_label} direct-json provider 已就绪；不经过 Camel-AI{mode_note}。"
-            ),
-        )
+    missing_key = config.api_key in {"", "replace-me", "这里是API"}
+    base_url = config.base_url or ("https://api.openai.com/v1" if config.provider == "openai" else "")
+    missing_url = not base_url or "YOUR-CONSOLE-API-HOST" in base_url
     try:
-        import camel  # noqa: F401
-    except Exception:
-        return LLMProviderStatus(
-            framework="camel-ai",
-            provider=config.provider,
-            model=config.model,
-            base_url=config.base_url,
-            active=False,
-            using_fallback=True,
-            reason=(
-                "未检测到 camel-ai 包，模型行为驱动不可用；"
-                "运行 `pip install -e .` 或使用项目 .venv 后可启用 Camel-AI provider。"
-            ),
+        import openai  # noqa: F401
+        sdk_available = True
+    except ImportError:
+        sdk_available = False
+    active = not missing_key and not missing_url and sdk_available
+    if not sdk_available:
+        reason = "缺少 openai SDK，请在项目虚拟环境运行 pip install -e .。"
+    elif missing_key or missing_url:
+        reason = "请配置有效的 API key 和 base_url；模型行为驱动不可用。"
+    else:
+        reason = (
+            f"直连 API 已配置；response_mode={config.response_mode}。"
+            "配置有效不代表网络连通，请运行联通检查。"
         )
-    missing_key = config.api_key in {"", "replace-me", "这里是API"} or (
-        config.api_key == "EMPTY" and config.provider != "qwen3"
-    )
-    mode_note = ""
-    if config.provider == "local-deepseek":
-        thinking = config.chat_template_kwargs.get("thinking")
-        mode_note = f"；response_mode={config.response_mode}, thinking={thinking}"
     return LLMProviderStatus(
-        framework="camel-ai",
+        framework="openai-compatible",
         provider=config.provider,
         model=config.model,
-        base_url=config.base_url,
-        active=not missing_key,
-        using_fallback=missing_key,
-        reason=(
-            "Camel-AI provider 已配置，但当前使用缺省 API key；模型行为驱动不可用。"
-            if missing_key
-            else f"Camel-AI provider 已就绪{mode_note}。"
-        ),
+        base_url=base_url,
+        active=active,
+        using_fallback=False,
+        reason=reason,
     )

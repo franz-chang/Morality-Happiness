@@ -1,6 +1,8 @@
 import {
   Activity,
   CircleStop,
+  ChevronLeft,
+  ChevronRight,
   Download,
   ArrowLeft,
   Languages,
@@ -22,9 +24,10 @@ type Scenario = {
   mode_label: string;
   resource_label: string;
   base_resource: number;
+  target_supply_ratio: number;
 };
 
-type MetricMap = Record<string, number | string>;
+type MetricMap = Record<string, number | string | boolean | null>;
 
 type MoralMetric = MetricMap & { label: string };
 
@@ -40,6 +43,8 @@ type TimePoint = {
 
 type ScenarioResult = {
   scenario: Scenario;
+  food_accounting?: MetricMap;
+  shell_accounting?: MetricMap;
   model_status: ModelStatus;
   society_metrics: MetricMap;
   moral_type_metrics: Record<string, MoralMetric>;
@@ -55,14 +60,14 @@ type ScenarioResult = {
     chieftain_ids?: number[];
     hunter_assignments?: Record<string, number[]>;
   };
-  promotion_events?: Array<Record<string, number | string>>;
+  promotion_events?: Array<Record<string, number | string | boolean>>;
 };
 
 type BatchResult = {
   parameters: Parameters;
   scenarios: Scenario[];
   results: ScenarioResult[];
-  comparison: Array<Record<string, number | string>>;
+  comparison: Array<Record<string, number | string | boolean | null>>;
   model_status: ModelStatus;
 };
 
@@ -133,10 +138,12 @@ type StreamEvent = {
 
 const defaultParams: Parameters = {
   population_size: 120,
-  ticks: 56,
-  replications: 1,
+  ticks: 560,
+  replications: 10,
   seed: 42,
   food_scale: 1.6,
+  scarcity_resource_multiplier: 1.21094,
+  abundance_resource_multiplier: 0.92285,
   alpha: 1.15,
   alpha_individual: 1.35,
   lambda_c: 0.2,
@@ -153,13 +160,25 @@ const defaultParams: Parameters = {
   rank_enabled: true,
   rank_split_enabled: true,
   promotion_enabled: true,
-  initial_shells: 8,
+  initial_shells: 30,
+  initial_shells_distribution: "uniform",
+  initial_shells_min: 20,
+  initial_shells_max: 40,
+  burn_in_ticks: 28,
+  relief_source: "external",
+  public_food_reserve: 0,
+  reference_meals_per_agent: 8,
   shell_base_price: 1,
-  trade_safety_buffer: 1,
+  shell_min_price: 0.2,
+  shell_max_price: 5,
+  market_price_rule: "demand_supply",
+  buyer_budget_fraction: 0.5,
+  trade_safety_buffer: 1.5,
+  idio_sigma: 0.3,
   chief_share_weight: 4,
   chieftain_share_weight: 2,
   hunter_share_weight: 1,
-  chief_leadership_share: 0.1,
+  chief_leadership_share: 4 / 130,
   chieftain_slots: 7,
   hunters_per_chieftain: 16,
   promotion_period: 28,
@@ -170,12 +189,12 @@ const defaultParams: Parameters = {
 };
 
 const fallbackScenarios: Scenario[] = [
-  { id: "S1", name: "匮乏强组织总体行动", mode: "organized", mode_label: "全体高度有组织行动", resource_label: "高度匮乏", base_resource: 0.35 },
-  { id: "S2", name: "匮乏弱组织抱团行动", mode: "group", mode_label: "自由抱团行动", resource_label: "高度匮乏", base_resource: 0.35 },
-  { id: "S3", name: "匮乏弱组织各自行动", mode: "individual", mode_label: "各自行动", resource_label: "高度匮乏", base_resource: 0.35 },
-  { id: "S4", name: "丰裕强组织总体行动", mode: "organized", mode_label: "全体高度有组织行动", resource_label: "基础丰裕", base_resource: 0.75 },
-  { id: "S5", name: "丰裕弱组织抱团行动", mode: "group", mode_label: "自由抱团行动", resource_label: "基础丰裕", base_resource: 0.75 },
-  { id: "S6", name: "丰裕弱组织各自行动", mode: "individual", mode_label: "各自行动", resource_label: "基础丰裕", base_resource: 0.75 },
+  { id: "S1", name: "匮乏强组织总体行动", mode: "organized", mode_label: "全体高度有组织行动", resource_label: "高度匮乏", base_resource: 0.35, target_supply_ratio: 0.8 },
+  { id: "S2", name: "匮乏弱组织抱团行动", mode: "group", mode_label: "自由抱团行动", resource_label: "高度匮乏", base_resource: 0.35, target_supply_ratio: 0.8 },
+  { id: "S3", name: "匮乏弱组织各自行动", mode: "individual", mode_label: "各自行动", resource_label: "高度匮乏", base_resource: 0.35, target_supply_ratio: 0.8 },
+  { id: "S4", name: "丰裕强组织总体行动", mode: "organized", mode_label: "全体高度有组织行动", resource_label: "基础丰裕", base_resource: 0.75, target_supply_ratio: 1.025 },
+  { id: "S5", name: "丰裕弱组织抱团行动", mode: "group", mode_label: "自由抱团行动", resource_label: "基础丰裕", base_resource: 0.75, target_supply_ratio: 1.025 },
+  { id: "S6", name: "丰裕弱组织各自行动", mode: "individual", mode_label: "各自行动", resource_label: "基础丰裕", base_resource: 0.75, target_supply_ratio: 1.025 },
 ];
 
 const moralOrder = [
@@ -198,6 +217,10 @@ const copy = {
   zh: {
     title: "部落狩猎模拟仿真",
     params: "参数",
+    collapseParams: "收起参数面板",
+    expandParams: "展开参数面板",
+    collapseButton: "收起",
+    expandButton: "展开",
 	    model: "模型",
 	    run: "运行",
 	    reset: "重置",
@@ -210,8 +233,11 @@ const copy = {
 	    exportResult: "导出结果",
 	    back: "返回",
 	    ticks: "轮数",
+    replications: "重复次数",
     population: "人口",
     foodScale: "食物尺度",
+    scarcityMultiplier: "匮乏档资源校准",
+    abundanceMultiplier: "丰裕档资源校准",
     lambdaC: "强组织增益",
     lambdaG: "抱团增益",
     envVolatility: "环境波动",
@@ -225,7 +251,9 @@ const copy = {
     rankSplitEnabled: "身份差额分成",
     promotionEnabled: "周期身份评选",
     initialShells: "初始贝壳/人",
-    shellPrice: "基础食物价格",
+    shellPrice: "基础价格（贝壳/餐）",
+    reliefSource: "救济来源",
+    publicFoodReserve: "公共粮仓初始量",
     tradeSafety: "交易储备倍数",
     chiefWeight: "首领分成权重",
     chieftainWeight: "酋长分成权重",
@@ -239,7 +267,13 @@ const copy = {
     economySummary: "交易与身份结果",
     shellBalance: "平均贝壳",
     shellGini: "贝壳基尼",
-    tradeVolume: "交易食物量",
+    tradeVolume: "成交餐数",
+    supplyRatio: "实测/目标供给比",
+    externalRelief: "外部救济总量",
+    publicRelief: "公共粮仓救济总量",
+    foodLedger: "食物账本误差",
+    roleConsumed: "平均实际消费",
+    unfundedDemand: "无支付能力需求（餐）",
     participationRate: "交易参与率",
     promotions: "身份变动",
     chief: "首领",
@@ -252,7 +286,7 @@ const copy = {
     economyComparison: "财富与交易对比",
     roleComparison: "三级身份分层",
     roleMobility: "身份流动与评选",
-    marketPrice: "市场价格",
+    marketPrice: "归一化价格 p/A",
     currentChief: "当前首领",
     quota: "辖额",
     eventTick: "轮次",
@@ -304,6 +338,10 @@ const copy = {
   en: {
     title: "Micro Hunting Tribe Simulation",
     params: "Parameters",
+    collapseParams: "Collapse parameters",
+    expandParams: "Expand parameters",
+    collapseButton: "Collapse",
+    expandButton: "Expand",
 	    model: "Model",
 	    run: "Run",
 	    reset: "Reset",
@@ -316,8 +354,11 @@ const copy = {
 	    exportResult: "Export Image",
 	    back: "Back",
 	    ticks: "Ticks",
+    replications: "Replications",
     population: "Population",
     foodScale: "Food scale",
+    scarcityMultiplier: "Scarcity calibration",
+    abundanceMultiplier: "Abundance calibration",
     lambdaC: "Organized gain",
     lambdaG: "Group gain",
     envVolatility: "Environment volatility",
@@ -331,7 +372,9 @@ const copy = {
     rankSplitEnabled: "Role-based shares",
     promotionEnabled: "Periodic promotion",
     initialShells: "Initial shells / agent",
-    shellPrice: "Base food price",
+    shellPrice: "Base price (shells/meal)",
+    reliefSource: "Relief source",
+    publicFoodReserve: "Initial public granary",
     tradeSafety: "Trade reserve buffer",
     chiefWeight: "Chief share weight",
     chieftainWeight: "Chieftain share weight",
@@ -345,7 +388,13 @@ const copy = {
     economySummary: "Trade & hierarchy result",
     shellBalance: "Avg shells",
     shellGini: "Shell Gini",
-    tradeVolume: "Food traded",
+    tradeVolume: "Meals traded",
+    supplyRatio: "Realized/target supply",
+    externalRelief: "External aid total",
+    publicRelief: "Public-granary aid total",
+    foodLedger: "Food ledger error",
+    roleConsumed: "Avg food consumed",
+    unfundedDemand: "Unaffordable demand (meals)",
     participationRate: "Trade participation",
     promotions: "Role changes",
     chief: "Chief",
@@ -358,7 +407,7 @@ const copy = {
     economyComparison: "Wealth & trade comparison",
     roleComparison: "Three-tier role breakdown",
     roleMobility: "Role mobility & promotion",
-    marketPrice: "Market price",
+    marketPrice: "Normalized price p/A",
     currentChief: "Current chief",
     quota: "Quota",
     eventTick: "Tick",
@@ -440,7 +489,7 @@ const statusLabelEn: Record<string, string> = {
   Extreme_Fatigue: "Extreme fatigue",
 };
 
-function numberValue(value: number | string | boolean | undefined): number {
+function numberValue(value: number | string | boolean | null | undefined): number {
   if (typeof value === "number") return value;
   if (typeof value === "string") return Number(value) || 0;
   if (typeof value === "boolean") return value ? 1 : 0;
@@ -455,8 +504,8 @@ function App() {
   const [params, setParams] = useState<Parameters>(defaultParams);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([
     { id: "rule", label: "规则默认", model: "deterministic-wellbeing-engine", base_url: "", description: "本地规则评分" },
-    { id: "openai", label: "OpenAI", model: "gpt-4o-mini", base_url: "", description: "Camel-AI + OpenAI" },
-    { id: "deepseek", label: "DeepSeek-V4-flash", model: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1", description: "OpenAI-Compatible direct-json 行为驱动" },
+    { id: "openai", label: "NO.1 API（OpenAI兼容）", model: "gpt-4o", base_url: "https://api.rcouyi.com/v1", description: "Base URL 按官方文档配置；请填写该站控制台的 API Key，模型名可按控制台支持列表调整" },
+    { id: "deepseek", label: "DeepSeek-V4.1-Flash-1017", model: "deepseek-flash", base_url: "https://api.deepseek.com/v1", description: "API 调用 ID：deepseek-flash；OpenAI-Compatible direct-json 行为驱动" },
     { id: "local-deepseek", label: "本地DeepSeek", model: "deepseek-v4-flash", base_url: "https://uni-api.cstcloud.cn/v1", description: "中国科技云 Uni-API direct-json；优先国内入口并自动备用 Global" },
   ]);
   const [scenarios, setScenarios] = useState<Scenario[]>(fallbackScenarios);
@@ -472,10 +521,9 @@ function App() {
   });
   const [view, setView] = useState<"home" | "analysis">("home");
   const analysisRef = useRef<HTMLDivElement>(null);
-  const controlPanelRef = useRef<HTMLElement>(null);
   const runAbortRef = useRef<AbortController | null>(null);
   const abortReasonRef = useRef<"stop" | "reset" | null>(null);
-  const [controlPanelHeight, setControlPanelHeight] = useState<number | null>(null);
+  const [isControlPanelCollapsed, setIsControlPanelCollapsed] = useState(false);
   const t = copy[language];
   const selectedProviderId = String(params.llm_provider ?? "rule");
   const [modelTest, setModelTest] = useState<ModelTestState>({
@@ -504,30 +552,6 @@ function App() {
     setModelTest({ provider: selectedProviderId, status: "idle", message: "" });
   }, [selectedProviderId]);
 
-  useEffect(() => {
-    const node = controlPanelRef.current;
-    if (!node) return;
-    const panel = node;
-
-    function syncControlPanelHeight() {
-      const next = Math.ceil(panel.getBoundingClientRect().height);
-      setControlPanelHeight((current) => (current === next ? current : next));
-    }
-
-    syncControlPanelHeight();
-    window.addEventListener("resize", syncControlPanelHeight);
-    if (typeof ResizeObserver === "undefined") {
-      return () => window.removeEventListener("resize", syncControlPanelHeight);
-    }
-
-    const observer = new ResizeObserver(syncControlPanelHeight);
-    observer.observe(panel);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", syncControlPanelHeight);
-    };
-  }, []);
-
   const activeResult = useMemo(() => {
     return result?.results.find((item) => item.scenario.id === activeScenarioId) ?? result?.results[0] ?? null;
   }, [activeScenarioId, result]);
@@ -543,7 +567,7 @@ function App() {
       [t.fairest, `${fairest.scenario_id} ${numberValue(fairest.social_gini_index).toFixed(3)}`],
       [t.minimumSurvival, `${numberValue(result.comparison[0]?.minimum_survival_rate).toFixed(2)}-${Math.max(...result.comparison.map((row) => numberValue(row.minimum_survival_rate))).toFixed(2)}`],
       [t.shellBalance, numberValue(result.comparison[0]?.avg_shell_balance).toFixed(2)],
-      [t.tradeVolume, numberValue(result.comparison[0]?.total_trade_volume_food).toFixed(1)],
+      [t.tradeVolume, numberValue(result.comparison[0]?.total_trade_volume_meals).toFixed(1)],
     ];
   }, [result, t]);
 
@@ -606,6 +630,7 @@ function App() {
     setErrorMessage("");
     setStatusKey("running");
     setView("home");
+    setIsControlPanelCollapsed(true);
     try {
       const response = await fetch(`${apiBase}/api/run-stream`, {
         method: "POST",
@@ -740,6 +765,7 @@ function App() {
     setErrorMessage("");
     setStatusKey("reset");
     setView("home");
+    setIsControlPanelCollapsed(false);
   }
 
   function toggleLanguage() {
@@ -941,13 +967,23 @@ function App() {
         </div>
       </header>
 
-      <section className="workspace">
-        <aside className="control-panel" ref={controlPanelRef}>
+      <section className={`workspace ${isControlPanelCollapsed ? "parameters-collapsed" : ""}`}>
+        <aside className={`control-panel ${isControlPanelCollapsed ? "is-collapsed" : ""}`}>
+          <button
+            type="button"
+            className="control-panel-toggle"
+            onClick={() => setIsControlPanelCollapsed((current) => !current)}
+            title={isControlPanelCollapsed ? t.expandParams : t.collapseParams}
+            aria-label={isControlPanelCollapsed ? t.expandParams : t.collapseParams}
+          >
+            {isControlPanelCollapsed ? <ChevronRight size={21} /> : <ChevronLeft size={21} />}
+            <span>{isControlPanelCollapsed ? t.expandButton : t.collapseButton}</span>
+          </button>
           <div className="panel-title">
             <SlidersHorizontal size={18} />
             <span>{t.params}</span>
           </div>
-          <div className="select-control">
+          <div className="select-control model-selector">
             <div className="model-control-header">
               <span>{t.model}</span>
               <button
@@ -977,33 +1013,6 @@ function App() {
               ? `${result.model_status.framework}/${result.model_status.provider}: ${result.model_status.reason}`
               : selectedModelDescription(modelOptions, String(params.llm_provider ?? "rule"))}
           </div>
-          <ParamControl label={t.ticks} value={numberValue(params.ticks)} min={10} max={300} step={10} onChange={(value) => updateParam("ticks", value)} />
-          <ParamControl label={t.population} value={numberValue(params.population_size)} min={24} max={240} step={12} onChange={(value) => updateParam("population_size", value)} />
-          <ParamControl label={t.foodScale} value={numberValue(params.food_scale)} min={0.8} max={3.2} step={0.05} onChange={(value) => updateParam("food_scale", value)} />
-          <ParamControl label={t.lambdaC} value={numberValue(params.lambda_c)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_c", value)} />
-          <ParamControl label={t.lambdaG} value={numberValue(params.lambda_g)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_g", value)} />
-          <ParamControl label={t.envVolatility} value={numberValue(params.environment_volatility)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("environment_volatility", value)} />
-          <ParamControl label={t.moralWeight} value={numberValue(params.moral_consistency_weight)} min={0.05} max={0.45} step={0.01} onChange={(value) => updateParam("moral_consistency_weight", value)} />
-          <ParamControl label={t.autonomyWeight} value={numberValue(params.autonomy_weight)} min={0.05} max={0.35} step={0.01} onChange={(value) => updateParam("autonomy_weight", value)} />
-          <ParamControl label={t.relationMemory} value={numberValue(params.relationship_memory_weight)} min={0} max={1} step={0.01} onChange={(value) => updateParam("relationship_memory_weight", value)} />
-          <ParamControl label={t.moralAdaptation} value={numberValue(params.moral_adaptation_rate)} min={0} max={0.2} step={0.005} onChange={(value) => updateParam("moral_adaptation_rate", value)} />
-          <div className="scenario-section-title">{t.economy}</div>
-          <ToggleControl label={t.tradeEnabled} value={Boolean(params.trade_enabled)} onChange={(value) => updateParamValue("trade_enabled", value)} />
-          <ToggleControl label={t.rankEnabled} value={Boolean(params.rank_enabled)} onChange={(value) => updateParamValue("rank_enabled", value)} />
-          <ToggleControl label={t.rankSplitEnabled} value={Boolean(params.rank_split_enabled)} onChange={(value) => updateParamValue("rank_split_enabled", value)} />
-          <ToggleControl label={t.promotionEnabled} value={Boolean(params.promotion_enabled)} onChange={(value) => updateParamValue("promotion_enabled", value)} />
-          <ParamControl label={t.initialShells} value={numberValue(params.initial_shells)} min={0} max={100} step={1} onChange={(value) => updateParam("initial_shells", value)} />
-          <ParamControl label={t.shellPrice} value={numberValue(params.shell_base_price)} min={0.1} max={10} step={0.1} onChange={(value) => updateParam("shell_base_price", value)} />
-          <ParamControl label={t.tradeSafety} value={numberValue(params.trade_safety_buffer)} min={0.5} max={4} step={0.1} onChange={(value) => updateParam("trade_safety_buffer", value)} />
-          <ParamControl label={t.chiefWeight} value={numberValue(params.chief_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("chief_share_weight", value)} />
-          <ParamControl label={t.chieftainWeight} value={numberValue(params.chieftain_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("chieftain_share_weight", value)} />
-          <ParamControl label={t.hunterWeight} value={numberValue(params.hunter_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("hunter_share_weight", value)} />
-          <ParamControl label={t.chiefLeadershipShare} value={numberValue(params.chief_leadership_share)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("chief_leadership_share", value)} />
-          <ParamControl label={t.chieftainSlots} value={numberValue(params.chieftain_slots)} min={1} max={20} step={1} onChange={(value) => updateParam("chieftain_slots", value)} />
-          <ParamControl label={t.huntersPerChieftain} value={numberValue(params.hunters_per_chieftain)} min={1} max={40} step={1} onChange={(value) => updateParam("hunters_per_chieftain", value)} />
-          <ParamControl label={t.promotionPeriod} value={numberValue(params.promotion_period)} min={1} max={200} step={1} onChange={(value) => updateParam("promotion_period", value)} />
-          <ParamControl label={t.shellPromotionWeight} value={numberValue(params.promotion_shell_weight)} min={0} max={1} step={0.05} onChange={(value) => updateParam("promotion_shell_weight", value)} />
-          <ParamControl label={t.huntingPromotionWeight} value={numberValue(params.promotion_hunting_weight)} min={0} max={1} step={0.05} onChange={(value) => updateParam("promotion_hunting_weight", value)} />
           <div className="scenario-section-title">实验情景</div>
           <div className="scenario-grid">
             {scenarios.map((scenario) => (
@@ -1017,9 +1026,48 @@ function App() {
               </button>
             ))}
           </div>
+          <ParamControl label={t.ticks} value={numberValue(params.ticks)} min={10} max={1120} step={28} onChange={(value) => updateParam("ticks", value)} />
+          <ParamControl label={t.replications} value={numberValue(params.replications)} min={1} max={100} step={1} onChange={(value) => updateParam("replications", value)} />
+          <ParamControl label={t.population} value={numberValue(params.population_size)} min={24} max={240} step={12} onChange={(value) => updateParam("population_size", value)} />
+          <ParamControl label={t.foodScale} value={numberValue(params.food_scale)} min={0.8} max={3.2} step={0.05} onChange={(value) => updateParam("food_scale", value)} />
+          <ParamControl label={t.scarcityMultiplier} value={numberValue(params.scarcity_resource_multiplier)} min={0} max={5} step={0.05} onChange={(value) => updateParam("scarcity_resource_multiplier", value)} />
+          <ParamControl label={t.abundanceMultiplier} value={numberValue(params.abundance_resource_multiplier)} min={0} max={5} step={0.05} onChange={(value) => updateParam("abundance_resource_multiplier", value)} />
+          <ParamControl label={t.lambdaC} value={numberValue(params.lambda_c)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_c", value)} />
+          <ParamControl label={t.lambdaG} value={numberValue(params.lambda_g)} min={0} max={0.8} step={0.02} onChange={(value) => updateParam("lambda_g", value)} />
+          <ParamControl label={t.envVolatility} value={numberValue(params.environment_volatility)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("environment_volatility", value)} />
+          <ParamControl label={t.moralWeight} value={numberValue(params.moral_consistency_weight)} min={0.05} max={0.45} step={0.01} onChange={(value) => updateParam("moral_consistency_weight", value)} />
+          <ParamControl label={t.autonomyWeight} value={numberValue(params.autonomy_weight)} min={0.05} max={0.35} step={0.01} onChange={(value) => updateParam("autonomy_weight", value)} />
+          <ParamControl label={t.relationMemory} value={numberValue(params.relationship_memory_weight)} min={0} max={1} step={0.01} onChange={(value) => updateParam("relationship_memory_weight", value)} />
+          <ParamControl label={t.moralAdaptation} value={numberValue(params.moral_adaptation_rate)} min={0} max={0.2} step={0.005} onChange={(value) => updateParam("moral_adaptation_rate", value)} />
+          <div className="scenario-section-title">{t.economy}</div>
+          <ToggleControl label={t.tradeEnabled} value={Boolean(params.trade_enabled)} onChange={(value) => updateParamValue("trade_enabled", value)} />
+          <ToggleControl label={t.rankEnabled} value={Boolean(params.rank_enabled)} onChange={(value) => updateParamValue("rank_enabled", value)} />
+          <ToggleControl label={t.rankSplitEnabled} value={Boolean(params.rank_split_enabled)} onChange={(value) => updateParamValue("rank_split_enabled", value)} />
+          <ToggleControl label={t.promotionEnabled} value={Boolean(params.promotion_enabled)} onChange={(value) => updateParamValue("promotion_enabled", value)} />
+          <label className="select-control">
+            <span>{t.reliefSource}</span>
+            <select value={String(params.relief_source ?? "external")} onChange={(event) => updateParamValue("relief_source", event.target.value)}>
+              <option value="external">{language === "zh" ? "外部援助（记账）" : "External aid (accounted)"}</option>
+              <option value="public">{language === "zh" ? "公共粮仓" : "Public granary"}</option>
+              <option value="none">{language === "zh" ? "不救济" : "No relief"}</option>
+            </select>
+          </label>
+          <ParamControl label={t.publicFoodReserve} value={numberValue(params.public_food_reserve)} min={0} max={1000} step={10} onChange={(value) => updateParam("public_food_reserve", value)} />
+          <ParamControl label={t.initialShells} value={numberValue(params.initial_shells)} min={0} max={100} step={1} onChange={(value) => updateParam("initial_shells", value)} />
+          <ParamControl label={t.shellPrice} value={numberValue(params.shell_base_price)} min={0.1} max={10} step={0.1} onChange={(value) => updateParam("shell_base_price", value)} />
+          <ParamControl label={t.tradeSafety} value={numberValue(params.trade_safety_buffer)} min={0.5} max={4} step={0.1} onChange={(value) => updateParam("trade_safety_buffer", value)} />
+          <ParamControl label={t.chiefWeight} value={numberValue(params.chief_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("chief_share_weight", value)} />
+          <ParamControl label={t.chieftainWeight} value={numberValue(params.chieftain_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("chieftain_share_weight", value)} />
+          <ParamControl label={t.hunterWeight} value={numberValue(params.hunter_share_weight)} min={0} max={10} step={0.5} onChange={(value) => updateParam("hunter_share_weight", value)} />
+          <ParamControl label={t.chiefLeadershipShare} value={numberValue(params.chief_leadership_share)} min={0} max={0.5} step={0.01} onChange={(value) => updateParam("chief_leadership_share", value)} />
+          <ParamControl label={t.chieftainSlots} value={numberValue(params.chieftain_slots)} min={1} max={20} step={1} onChange={(value) => updateParam("chieftain_slots", value)} />
+          <ParamControl label={t.huntersPerChieftain} value={numberValue(params.hunters_per_chieftain)} min={1} max={40} step={1} onChange={(value) => updateParam("hunters_per_chieftain", value)} />
+          <ParamControl label={t.promotionPeriod} value={numberValue(params.promotion_period)} min={1} max={200} step={1} onChange={(value) => updateParam("promotion_period", value)} />
+          <ParamControl label={t.shellPromotionWeight} value={numberValue(params.promotion_shell_weight)} min={0} max={1} step={0.05} onChange={(value) => updateParam("promotion_shell_weight", value)} />
+          <ParamControl label={t.huntingPromotionWeight} value={numberValue(params.promotion_hunting_weight)} min={0} max={1} step={0.05} onChange={(value) => updateParam("promotion_hunting_weight", value)} />
         </aside>
 
-        <section className="dashboard" style={controlPanelHeight ? { height: controlPanelHeight } : undefined}>
+        <section className="dashboard">
           <div className="kpi-row">
             {kpis.length ? kpis.map(([label, value]) => (
               <div className="kpi" key={label}>
@@ -1034,8 +1082,6 @@ function App() {
             )}
           </div>
 
-          <EconomySummary result={activeResult} language={language} />
-
           <section className="surface log-surface">
             <div className="section-heading with-tabs">
               <div className="heading-left">
@@ -1048,6 +1094,8 @@ function App() {
             </div>
             <SystemLog result={activeResult} language={language} />
           </section>
+
+          <EconomySummary result={activeResult} language={language} />
         </section>
 
         <div className="analysis-cta-row">
@@ -1100,6 +1148,8 @@ function EconomySummary({ result, language }: { result: ScenarioResult | null; l
   const t = copy[language];
   const trade = result?.trade_metrics ?? {};
   const roles = result?.role_metrics ?? {};
+  const society = result?.society_metrics ?? {};
+  const foodAccounting = result?.food_accounting ?? {};
   const roleOrder = ["chief", "chieftain", "hunter"];
   return (
     <section className="surface economy-surface">
@@ -1112,8 +1162,13 @@ function EconomySummary({ result, language }: { result: ScenarioResult | null; l
       <div className="economy-kpis">
         <div><span>{t.shellBalance}</span><strong>{numberValue(trade.avg_shell_balance).toFixed(2)}</strong></div>
         <div><span>{t.shellGini}</span><strong>{numberValue(trade.shell_gini_index).toFixed(3)}</strong></div>
-        <div><span>{t.tradeVolume}</span><strong>{numberValue(trade.total_trade_volume_food).toFixed(1)}</strong></div>
+        <div><span>{t.tradeVolume}</span><strong>{numberValue(trade.total_trade_volume_meals).toFixed(1)}</strong></div>
         <div><span>{t.participationRate}</span><strong>{(numberValue(trade.trade_participation_rate) * 100).toFixed(0)}%</strong></div>
+        <div><span>{t.supplyRatio}</span><strong>{numberValue(society.realized_supply_ratio).toFixed(3)} / {result?.scenario.target_supply_ratio.toFixed(3) ?? "—"}</strong></div>
+        <div><span>{t.unfundedDemand}</span><strong>{numberValue(trade.unfunded_demand_meals).toFixed(1)}</strong></div>
+        <div><span>{t.externalRelief}</span><strong>{numberValue(foodAccounting.external_relief_total).toFixed(1)}</strong></div>
+        <div><span>{t.publicRelief}</span><strong>{numberValue(foodAccounting.public_relief_total).toFixed(1)}</strong></div>
+        <div><span>{t.foodLedger}</span><strong>{numberValue(foodAccounting.balance_error).toExponential(1)}</strong></div>
         <div><span>{t.promotions}</span><strong>{result?.promotion_events?.length ?? 0}</strong></div>
       </div>
       <div className="role-grid">
@@ -1125,6 +1180,7 @@ function EconomySummary({ result, language }: { result: ScenarioResult | null; l
               <div className="role-card-title"><strong>{roleLabel}</strong><span>{numberValue(metric.population).toFixed(0)} {t.populationCount}</span></div>
               <span>{t.roleShells} {numberValue(metric.avg_shell_balance).toFixed(2)}</span>
               <span>{t.roleFood} {numberValue(metric.avg_food_allocated).toFixed(2)}</span>
+              <span>{t.roleConsumed} {numberValue(metric.avg_food_consumed).toFixed(2)}</span>
               <span>{t.roleWellbeing} {numberValue(metric.avg_wellbeing).toFixed(1)}</span>
             </div>
           );
@@ -1336,7 +1392,7 @@ function EconomyComparison({ result, activeResult, language }: { result: BatchRe
   const rows = result?.comparison ?? [];
   const t = copy[language];
   if (!rows.length) return <EmptyChart />;
-  const maxTrade = Math.max(1, ...rows.map((row) => numberValue(row.total_trade_volume_food)));
+  const maxTrade = Math.max(1, ...rows.map((row) => numberValue(row.total_trade_volume_meals)));
   return (
     <div className="economy-analysis-layout">
       <div className="analysis-table-wrap">
@@ -1352,7 +1408,7 @@ function EconomyComparison({ result, activeResult, language }: { result: BatchRe
           </thead>
           <tbody>
             {rows.map((row) => {
-              const tradeVolume = numberValue(row.total_trade_volume_food);
+              const tradeVolume = numberValue(row.total_trade_volume_meals);
               return (
                 <tr key={String(row.scenario_id)}>
                   <th>{String(row.scenario_id)}</th>
@@ -1381,9 +1437,8 @@ function TradeProfileRadar({ result, activeResult, language }: { result: BatchRe
   const trade = activeResult?.trade_metrics ?? {};
   if (!activeResult) return <div className="radar-empty">{t.waiting}</div>;
   const rows = result?.comparison ?? [];
-  const maxTrade = Math.max(1, ...rows.map((row) => numberValue(row.total_trade_volume_food)));
+  const maxTrade = Math.max(1, ...rows.map((row) => numberValue(row.total_trade_volume_meals)));
   const maxRounds = Math.max(1, ...rows.map((row) => numberValue(row.trade_rounds)));
-  const maxPrice = Math.max(1, ...rows.map((row) => numberValue(row.avg_market_clearing_price)));
   return (
     <div className="radar-panel">
       <div className="radar-panel-heading">
@@ -1398,9 +1453,9 @@ function TradeProfileRadar({ result, activeResult, language }: { result: BatchRe
           values: [
             numberValue(trade.trade_participation_rate) * 100,
             numberValue(trade.food_self_sufficiency_rate) * 100,
-            (numberValue(trade.total_trade_volume_food) / maxTrade) * 100,
+            (numberValue(trade.total_trade_volume_meals) / maxTrade) * 100,
             (numberValue(trade.trade_rounds) / maxRounds) * 100,
-            (numberValue(trade.avg_market_clearing_price) / maxPrice) * 100,
+            Math.min(100, (numberValue(trade.avg_normalized_market_price) / 4) * 100),
           ],
         }]}
       />
@@ -1680,21 +1735,15 @@ function GroupNetwork({ result }: { result: ScenarioResult | null }) {
 
 function SystemLog({ result, language }: { result: ScenarioResult | null; language: Language }) {
   const t = copy[language];
-  const listRef = useRef<HTMLDivElement>(null);
   const logs = result ? [...(result.system_logs ?? []), ...(result.agent_logs ?? [])].sort((a, b) => {
     if (a.tick !== b.tick) return a.tick - b.tick;
     if ((a.sequence ?? 0) !== (b.sequence ?? 0)) return (a.sequence ?? 0) - (b.sequence ?? 0);
     return (a.agent_id ?? -1) - (b.agent_id ?? -1);
   }) : [];
-  useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
-    }
-  }, [logs.length]);
   if (!result) return <EmptyChart />;
   if (!logs.length) return <EmptyChart />;
   return (
-    <div className="log-list" ref={listRef}>
+    <div className="log-list">
       {logs.map((log, index) => (
         <div className={logRowClass(log)} key={`${log.tick}-${log.agent_id ?? "system"}-${index}`}>
           <div className="log-stamp">

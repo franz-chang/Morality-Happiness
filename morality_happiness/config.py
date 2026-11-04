@@ -23,6 +23,7 @@ SCENARIOS: dict[str, Scenario] = {
             "alt_dev": 0.2,
             "alt_rest": 0.5,
         },
+        target_supply_ratio=0.80,
     ),
     "S2": Scenario(
         id="S2",
@@ -40,6 +41,7 @@ SCENARIOS: dict[str, Scenario] = {
             "alt_dev": 0.3,
             "alt_rest": 0.4,
         },
+        target_supply_ratio=0.80,
     ),
     "S3": Scenario(
         id="S3",
@@ -57,6 +59,7 @@ SCENARIOS: dict[str, Scenario] = {
             "alt_dev": 0.1,
             "alt_rest": 0.1,
         },
+        target_supply_ratio=0.80,
     ),
     "S4": Scenario(
         id="S4",
@@ -74,6 +77,7 @@ SCENARIOS: dict[str, Scenario] = {
             "alt_dev": 0.5,
             "alt_rest": 0.2,
         },
+        target_supply_ratio=1.025,
     ),
     "S5": Scenario(
         id="S5",
@@ -91,6 +95,7 @@ SCENARIOS: dict[str, Scenario] = {
             "alt_dev": 0.4,
             "alt_rest": 0.2,
         },
+        target_supply_ratio=1.025,
     ),
     "S6": Scenario(
         id="S6",
@@ -108,6 +113,7 @@ SCENARIOS: dict[str, Scenario] = {
             "alt_dev": 0.1,
             "alt_rest": 0.1,
         },
+        target_supply_ratio=1.025,
     ),
 }
 
@@ -115,8 +121,8 @@ SCENARIOS: dict[str, Scenario] = {
 @dataclass
 class SimulationParameters:
     population_size: int = 120
-    ticks: int = 56
-    replications: int = 1
+    ticks: int = 560
+    replications: int = 10
     seed: int = 42
     need_base: float = 1.5
     food_scale: float = 1.6
@@ -128,6 +134,8 @@ class SimulationParameters:
     group_cost_per_team: float = 0.45
     base_combat_power: float = 10.0
     prey_meat_scale: float = 0.18
+    scarcity_resource_multiplier: float = 1.21094
+    abundance_resource_multiplier: float = 0.92285
     environment_volatility: float = 0.10
     organized_equal_weight: float = 0.80
     share_norm_alt_weight: float = 0.40
@@ -150,16 +158,26 @@ class SimulationParameters:
     rank_enabled: bool = True
     rank_split_enabled: bool = True
     promotion_enabled: bool = True
-    initial_shells: float = 8.0
+    initial_shells: float = 30.0
+    initial_shells_distribution: str = "uniform"
+    initial_shells_min: float = 20.0
+    initial_shells_max: float = 40.0
+    burn_in_ticks: int = 28
+    relief_source: str = "external"
+    public_food_reserve: float = 0.0
+    reference_meals_per_agent: float = 8.0
     shell_base_price: float = 1.0
-    shell_min_price: float = 0.25
-    shell_max_price: float = 4.0
-    trade_safety_buffer: float = 1.0
+    shell_min_price: float = 0.2
+    shell_max_price: float = 5.0
+    market_price_rule: str = "demand_supply"
+    buyer_budget_fraction: float = 0.5
+    trade_safety_buffer: float = 1.5
     max_trade_rounds: int = 1
+    idio_sigma: float = 0.3
     chief_share_weight: float = 4.0
     chieftain_share_weight: float = 2.0
     hunter_share_weight: float = 1.0
-    chief_leadership_share: float = 0.10
+    chief_leadership_share: float = 4.0 / 130.0
     chieftain_slots: int = 7
     hunters_per_chieftain: int = 16
     promotion_period: int = 28
@@ -199,6 +217,8 @@ class SimulationParameters:
         self.group_cost_per_team = max(0.0, float(self.group_cost_per_team))
         self.base_combat_power = max(0.1, float(self.base_combat_power))
         self.prey_meat_scale = max(0.0, float(self.prey_meat_scale))
+        self.scarcity_resource_multiplier = max(0.0, float(self.scarcity_resource_multiplier))
+        self.abundance_resource_multiplier = max(0.0, float(self.abundance_resource_multiplier))
         self.environment_volatility = max(0.0, min(0.5, float(self.environment_volatility)))
         self.organized_equal_weight = max(0.0, min(1.0, float(self.organized_equal_weight)))
         self.share_norm_alt_weight = max(0.0, min(1.0, float(self.share_norm_alt_weight)))
@@ -228,11 +248,27 @@ class SimulationParameters:
         self.rank_split_enabled = self._coerce_bool(self.rank_split_enabled)
         self.promotion_enabled = self._coerce_bool(self.promotion_enabled)
         self.initial_shells = max(0.0, float(self.initial_shells))
+        self.initial_shells_distribution = str(self.initial_shells_distribution).strip().lower()
+        if self.initial_shells_distribution not in {"uniform", "equal"}:
+            self.initial_shells_distribution = "uniform"
+        self.initial_shells_min = max(0.0, float(self.initial_shells_min))
+        self.initial_shells_max = max(self.initial_shells_min, float(self.initial_shells_max))
+        self.burn_in_ticks = max(0, min(self.ticks, int(self.burn_in_ticks)))
+        self.relief_source = str(self.relief_source).strip().lower()
+        if self.relief_source not in {"external", "public", "none"}:
+            self.relief_source = "external"
+        self.public_food_reserve = max(0.0, float(self.public_food_reserve))
+        self.reference_meals_per_agent = max(0.1, float(self.reference_meals_per_agent))
         self.shell_base_price = max(0.01, float(self.shell_base_price))
         self.shell_min_price = max(0.01, float(self.shell_min_price))
         self.shell_max_price = max(self.shell_min_price, float(self.shell_max_price))
+        self.market_price_rule = str(self.market_price_rule).strip().lower()
+        if self.market_price_rule not in {"demand_supply", "fixed"}:
+            self.market_price_rule = "demand_supply"
+        self.buyer_budget_fraction = max(0.0, min(1.0, float(self.buyer_budget_fraction)))
         self.trade_safety_buffer = max(0.0, min(30.0, float(self.trade_safety_buffer)))
         self.max_trade_rounds = max(1, min(10, int(self.max_trade_rounds)))
+        self.idio_sigma = max(0.0, min(3.0, float(self.idio_sigma)))
         self.chief_share_weight = max(0.0, float(self.chief_share_weight))
         self.chieftain_share_weight = max(0.0, float(self.chieftain_share_weight))
         self.hunter_share_weight = max(0.0, float(self.hunter_share_weight))
