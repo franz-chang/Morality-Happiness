@@ -841,6 +841,17 @@ h2 {
   overflow-x: auto;
 }
 
+.wellbeing-analysis-note {
+  margin: 0 0 14px;
+  color: #62736d;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.wellbeing-trend {
+  margin-top: 20px;
+}
+
 .economy-analysis-layout {
   display: grid;
   grid-template-columns: minmax(420px, 1fr) minmax(280px, 360px);

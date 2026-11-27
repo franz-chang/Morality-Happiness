@@ -35,6 +35,8 @@ type TimePoint = {
   tick: number;
   avg_food_allocated: number;
   avg_wellbeing: number;
+  avg_objective_wellbeing?: number | null;
+  avg_peer_perceived_wellbeing?: number | null;
   social_gini_index: number;
   minimum_survival_rate: number;
   total_food: number;
@@ -863,6 +865,18 @@ function App() {
             </section>
 
             <section className="surface analysis-wide">
+              <div className="section-heading with-tabs">
+                <h2>{language === "zh" ? "幸福度分析" : "Wellbeing analysis"}</h2>
+                <div className="tabs">
+                  {(result?.results ?? []).map((item) => (
+                    <button key={item.scenario.id} className={activeScenarioId === item.scenario.id ? "tab active" : "tab"} onClick={() => setActiveScenarioId(item.scenario.id)}>{item.scenario.id}</button>
+                  ))}
+                </div>
+              </div>
+              <WellbeingAnalysis result={result} activeResult={activeResult} language={language} />
+            </section>
+
+            <section className="surface analysis-wide">
               <div className="section-heading">
                 <h2>{t.economyComparison}</h2>
               </div>
@@ -1170,6 +1184,8 @@ function EconomySummary({ result, language }: { result: ScenarioResult | null; l
         <div><span>{t.publicRelief}</span><strong>{numberValue(foodAccounting.public_relief_total).toFixed(1)}</strong></div>
         <div><span>{t.foodLedger}</span><strong>{numberValue(foodAccounting.balance_error).toExponential(1)}</strong></div>
         <div><span>{t.promotions}</span><strong>{result?.promotion_events?.length ?? 0}</strong></div>
+        <div><span>{language === "zh" ? "自身幸福度" : "Living-condition wellbeing"}</span><strong>{typeof society.avg_objective_wellbeing === "number" ? society.avg_objective_wellbeing.toFixed(1) : "—"}</strong></div>
+        <div><span>{language === "zh" ? "他人评价幸福度" : "Peer-perceived wellbeing"}</span><strong>{typeof society.avg_peer_perceived_wellbeing === "number" ? society.avg_peer_perceived_wellbeing.toFixed(1) : "—"}</strong></div>
       </div>
       <div className="role-grid">
         {roleOrder.map((role) => {
@@ -1583,6 +1599,45 @@ function PromotionEvents({ result, language }: { result: ScenarioResult | null; 
       ))}
     </div>
   );
+}
+
+function WellbeingAnalysis({ result, activeResult, language }: { result: BatchResult | null; activeResult: ScenarioResult | null; language: Language }) {
+  const rows = result?.results ?? [];
+  if (!rows.length) return <EmptyChart />;
+  const zh = language === "zh";
+  const format = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "—";
+  const points = activeResult?.time_series ?? [];
+  const series = [
+    { key: "avg_wellbeing" as const, label: zh ? "原有幸福感" : "Original wellbeing", color: "#2c747a" },
+    { key: "avg_objective_wellbeing" as const, label: zh ? "自身幸福度" : "Living-condition wellbeing", color: "#cc8b2e" },
+    { key: "avg_peer_perceived_wellbeing" as const, label: zh ? "他人评价幸福度" : "Peer-perceived wellbeing", color: "#7955a4" },
+  ];
+  const lastTick = Math.max(1, points[points.length - 1]?.tick ?? 1);
+  const pathFor = (key: typeof series[number]["key"]) => {
+    let open = false;
+    return points.map((point) => {
+      const value = point[key];
+      if (typeof value !== "number" || !Number.isFinite(value)) { open = false; return ""; }
+      const command = open ? "L" : "M";
+      open = true;
+      return `${command} ${40 + point.tick / lastTick * 700} ${205 - value * 1.6}`;
+    }).join(" ");
+  };
+  return <div className="wellbeing-analysis">
+    <p className="wellbeing-analysis-note">{zh ? "各情境为热身期后的平均分；他人评价缺失时显示“—”。图中为所选情境的逐轮均值。" : "Scenario averages exclude the warm-up period. A dash means no peer ratings. The chart shows per-round averages for the selected scenario."}</p>
+    <div className="analysis-table-wrap"><table className="analysis-table">
+      <thead><tr><th>{zh ? "情境" : "Scenario"}</th>{series.map((item) => <th key={item.key}>{item.label}</th>)}</tr></thead>
+      <tbody>{rows.map((row) => <tr key={row.scenario.id}><th>{row.scenario.id}</th>{series.map((item) => <td key={item.key}>{format(row.society_metrics[item.key])}</td>)}</tr>)}</tbody>
+    </table></div>
+    {points.length > 0 && <div className="wellbeing-trend">
+      <div className="radar-legend">{series.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+      <svg viewBox="0 0 780 245" className="chart" role="img" aria-label={zh ? "幸福度逐轮变化" : "Wellbeing by round"}>
+        {[0, 50, 100].map((value) => <g key={value}><line x1="40" x2="740" y1={205 - value * 1.6} y2={205 - value * 1.6} stroke="#e3eae6" /><text x="32" y={209 - value * 1.6} textAnchor="end" className="tick-label">{value}</text></g>)}
+        {series.map((item) => <path key={item.key} d={pathFor(item.key)} fill="none" stroke={item.color} strokeWidth="2.5" />)}
+        <text x="40" y="228" className="tick-label">0</text><text x="740" y="228" textAnchor="end" className="tick-label">{lastTick}</text>
+      </svg>
+    </div>}
+  </div>;
 }
 
 function ComparisonBars({ result, language }: { result: BatchResult | null; language: Language }) {

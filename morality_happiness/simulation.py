@@ -82,6 +82,7 @@ class Simulation:
         self.agent_logs: list[dict[str, Any]] = []
         self.system_logs: list[dict[str, Any]] = []
         self.trade_records: list[dict[str, Any]] = []
+        self.wellbeing_evaluations: list[dict[str, Any]] = []
         self.promotion_events: list[dict[str, Any]] = []
         self.promotion_reviews: list[dict[str, Any]] = []
         self.event_callback = event_callback
@@ -501,6 +502,7 @@ class Simulation:
             tick_unmet += unmet_food
             tick_food_loss += food_loss
 
+        self._evaluate_additional_wellbeing(tick, contexts, effective_needs)
         survival_rate = 1.0 - starved_count / max(1, len(self.agents))
         self.last_underfed_rate = 1.0 - survival_rate
         self.survival_rates.append(survival_rate)
@@ -582,6 +584,49 @@ class Simulation:
             and self._promotion_due(tick)
         ):
             self._evaluate_promotions(tick)
+
+    def _evaluate_additional_wellbeing(self, tick: int, contexts: dict, needs: dict) -> None:
+        """Fixed, scenario-independent scoring scales; peer scores use observable team activity."""
+        role_scores = {Role.CHIEF: 100.0, Role.CHIEFTAIN: 75.0, Role.HUNTER: 50.0}
+        for agent in self.agents:
+            ratio = agent.food_consumed_history[-1] / max(needs[agent.id], 1e-9)
+            food = 100.0 * clip(ratio, 0.0, 1.0) * (1.0 - 0.25 * clip(agent.fatigue / 2.0, 0.0, 1.0))
+            if agent.status is Status.EXTREME_FATIGUE:
+                food *= 0.5
+            contribution = max(0.0, float(contexts.get(agent.id, {}).get("hunting_contribution", 0.0)))
+            production = 100.0 * min(1.0, contribution / max(agent.need, 1e-9))
+            role = role_scores[agent.role] if self.params.rank_enabled else 50.0
+            wealth = 100.0 * min(1.0, math.log1p(agent.shell_balance) / math.log1p(40.0))
+            agent.objective_wellbeing = 0.4 * food + 0.2 * production + 0.2 * role + 0.2 * wealth
+
+            if self.scenario.mode is ActionMode.ORGANIZED:
+                observers = [other for other in self.agents if other.id != agent.id]
+            elif self.scenario.mode is ActionMode.GROUP and agent.group_id is not None:
+                observers = [other for other in self.agents if other.id != agent.id and other.group_id == agent.group_id]
+            else:
+                observers = []
+            team_ids = {other.id for other in observers}
+            partners = contexts.get(agent.id, {}).get("trade_partners", set())
+            observers.extend(other for other in self.agents if other.id in partners and other.id not in team_ids)
+            # At most three rotating team observers keep long runs tractable and reproducible.
+            observers.sort(key=lambda other: other.id)
+            if observers:
+                start = (tick + agent.id) % len(observers)
+                observers = (observers[start:] + observers[:start])[:3]
+            ratings = []
+            for observer in observers:
+                # Role and contribution are visible to a hunting teammate; private food and wealth are not assumed visible.
+                same_team = self.scenario.mode is ActionMode.ORGANIZED or (self.scenario.mode is ActionMode.GROUP and agent.group_id is not None and agent.group_id == observer.group_id)
+                rating = 0.5 * role + 0.5 * production if same_team else role
+                ratings.append(rating)
+                observed = {"role": agent.role.value if self.params.rank_enabled else None}
+                if same_team:
+                    observed["hunting_contribution"] = contribution
+                self.wellbeing_evaluations.append({"tick": tick, "observer_id": observer.id, "agent_id": agent.id, "score": rating, "observed": observed})
+            agent.peer_perceived_wellbeing = mean(ratings) if ratings else None
+            agent.wellbeing_perception_gap = agent.peer_perceived_wellbeing - agent.objective_wellbeing if ratings else None
+            agent.objective_wellbeing_history.append(agent.objective_wellbeing)
+            agent.peer_perceived_wellbeing_history.append(agent.peer_perceived_wellbeing)
 
     def _promotion_due(self, tick: int) -> bool:
         """Schedule the first review at burn-in completion, then every full period."""
@@ -715,6 +760,8 @@ class Simulation:
                 seller.trade_count += 1
                 buyer.trade_count += 1
                 participant_ids.update({seller.id, buyer.id})
+                contexts.setdefault(seller.id, {}).setdefault("trade_partners", set()).add(buyer.id)
+                contexts.setdefault(buyer.id, {}).setdefault("trade_partners", set()).add(seller.id)
                 contexts.setdefault(seller.id, {})["trade_food_sold"] = (
                     float(contexts.get(seller.id, {}).get("trade_food_sold", 0.0)) + amount_food
                 )
@@ -2240,6 +2287,8 @@ class Simulation:
             "tick": tick,
             "avg_food_allocated": mean(allocations.values()),
             "avg_wellbeing": mean(agent.wellbeing for agent in self.agents),
+            "avg_objective_wellbeing": mean(agent.objective_wellbeing for agent in self.agents if agent.objective_wellbeing is not None),
+            "avg_peer_perceived_wellbeing": (mean(a.peer_perceived_wellbeing for a in self.agents if a.peer_perceived_wellbeing is not None) if any(a.peer_perceived_wellbeing is not None for a in self.agents) else None),
             "social_gini_index": gini(list(allocations.values())),
             "minimum_survival_rate": survival_rate,
             "base_food": production["base_food"],
@@ -2315,6 +2364,8 @@ class Simulation:
             )
         society.update(
             {
+                "avg_objective_wellbeing": (mean(v for a in self.agents for v in a.objective_wellbeing_history[self.params.burn_in_ticks:]) if any(a.objective_wellbeing_history[self.params.burn_in_ticks:] for a in self.agents) else None),
+                "avg_peer_perceived_wellbeing": (mean(v for a in self.agents for v in a.peer_perceived_wellbeing_history[self.params.burn_in_ticks:] if v is not None) if any(v is not None for a in self.agents for v in a.peer_perceived_wellbeing_history[self.params.burn_in_ticks:]) else None),
                 "avg_shell_balance": trade_metrics["avg_shell_balance"],
                 "shell_gini_index": trade_metrics["shell_gini_index"],
                 "total_trade_volume_food": trade_metrics["total_trade_volume_food"],
@@ -2343,6 +2394,7 @@ class Simulation:
             "time_series": self.time_series,
             "system_logs": self.system_logs,
             "agent_logs": self.agent_logs,
+            "wellbeing_evaluations": self.wellbeing_evaluations,
             "final_agents": [agent.to_snapshot() for agent in self.agents],
             "group_records": self.group_records[-200:],
             "trade_metrics": trade_metrics,
@@ -2689,6 +2741,7 @@ def _aggregate_replicate_results(
         "time_series": _mean_time_series([result["time_series"] for result in scenario_results]),
         "system_logs": first["system_logs"][:200],
         "agent_logs": first["agent_logs"][:300],
+        "wellbeing_evaluations": [{**evaluation, "replication": index + 1} for index, result in enumerate(scenario_results) for evaluation in result.get("wellbeing_evaluations", [])],
         "final_agents": first["final_agents"],
         "group_records": first["group_records"],
         "trade_records": first.get("trade_records", []),

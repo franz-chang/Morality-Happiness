@@ -213,6 +213,11 @@ class AgentState:
     extreme_trigger_history: list[int] = field(default_factory=list)
     wellbeing_history: list[float] = field(default_factory=list)
     moral_consistency_history: list[float] = field(default_factory=list)
+    objective_wellbeing: float | None = None
+    peer_perceived_wellbeing: float | None = None
+    wellbeing_perception_gap: float | None = None
+    objective_wellbeing_history: list[float] = field(default_factory=list)
+    peer_perceived_wellbeing_history: list[float | None] = field(default_factory=list)
 
     @property
     def alt_orientation(self) -> float:
@@ -243,6 +248,9 @@ class AgentState:
             "coordination": self.coordination,
             "need": self.need,
             "wellbeing": self.wellbeing,
+            "objective_wellbeing": self.objective_wellbeing,
+            "peer_perceived_wellbeing": self.peer_perceived_wellbeing,
+            "wellbeing_perception_gap": self.wellbeing_perception_gap,
             "food_reserve": self.food_reserve,
             "pending_relief": self.pending_relief,
             "fatigue": self.fatigue,

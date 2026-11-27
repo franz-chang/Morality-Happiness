@@ -5,6 +5,18 @@ from morality_happiness.simulation import Simulation
 
 
 class SmokeTest(unittest.TestCase):
+    def test_wellbeing_observers_and_missing_values(self) -> None:
+        params = SimulationParameters(population_size=8, ticks=2, replications=1, burn_in_ticks=0, trade_enabled=False)
+        individual = run_batch(["S3"], params)["results"][0]
+        self.assertIsNone(individual["society_metrics"]["avg_peer_perceived_wellbeing"])
+        self.assertTrue(all(a["peer_perceived_wellbeing"] is None for a in individual["final_agents"]))
+        organized = run_batch(["S1"], params)["results"][0]
+        self.assertTrue(organized["wellbeing_evaluations"])
+        for agent in organized["final_agents"]:
+            self.assertGreaterEqual(agent["objective_wellbeing"], 0)
+            self.assertLessEqual(agent["objective_wellbeing"], 100)
+            self.assertAlmostEqual(agent["wellbeing_perception_gap"], agent["peer_perceived_wellbeing"] - agent["objective_wellbeing"])
+
     def test_all_scenarios_smoke(self) -> None:
         result = run_batch(parameters=SimulationParameters(population_size=32, ticks=8, seed=3))
         self.assertEqual(len(result["results"]), 6)
